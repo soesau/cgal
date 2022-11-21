@@ -23,6 +23,10 @@
 
 #include <boost/iterator/transform_iterator.hpp>
 
+#include <CGAL/Point_set_processing_3/internal/cone_fitting.h>
+
+#include <Mathematics/ApprCone3.h>
+
 #if defined(CGAL_EIGEN3_ENABLED) || defined(DOXYGEN_RUNNING)
 
 #include <Eigen/Dense>
@@ -39,6 +43,121 @@ namespace Point_set_processing_3
 
 namespace internal
 {
+template<class PointRange, class Vector_3, class Point_3, class FT>
+void fitCone(PointRange& pts, Vector_3& axis, Point_3& apex, FT& aperture, std::size_t idx) {
+  gte::ApprCone3<double> fitter;
+  std::size_t const maxIterations = 32;
+  double const updateLengthTolerance = 1e-04;
+  double const errorDifferenceTolerance = 1e-08;
+  bool useConeInputAsInitialGuess = true;
+
+  CGAL::Nth_of_tuple_property_map<0, Point_with_info> pm;
+
+  double mean_x = 0, mean_y = 0, mean_z = 0;
+  std::size_t num = std::distance(pts.begin(), pts.end());
+
+  for (std::size_t i = 0; i < pts.size(); i++) {
+    typename Kernel::Point_3 p = get(pm, *(pts.begin() + i));
+    mean_x += p.x();
+    mean_y += p.y();
+    mean_z += p.z();
+  }
+  mean_x /= pts.size();
+  mean_y /= pts.size();
+  mean_z /= pts.size();
+
+  std::vector<gte::Vector<3, double>> pts_converted(pts.size());
+  for (std::size_t i = 0; i < pts.size(); i++) {
+    typename Kernel::Point_3 p = get(pm, *(pts.begin() + i));
+    pts_converted[i] = gte::Vector<3, double>{ p.x() - mean_x, p.y() - mean_y, p.z() - mean_z };
+  }
+
+  // Simple starting point estimation for cone fitting by creating a circle in the xy-plane using 3 points
+  Point_3 f = get(pm, *pts.begin());
+  f = Point_3(f.x() - mean_x, f.y() - mean_y, 0);
+
+  Point_3 m = get(pm, *(pts.begin() + num / 2));
+  m = Point_3(m.x() - mean_x, m.y() - mean_y, 0);
+
+  Point_3 l = get(pm, *(pts.end() - 1));
+  l = Point_3(l.x() - mean_x, l.y() - mean_y, 0);
+
+  Kernel::Circle_3 c(f, m, l);
+
+  double coneAngle = 0.40; // approximately an opening angle of 25 degrees, i.e., tan(12.5/180 * pi)
+  gte::Vector<3, double> coneVertex{ c.center().x(), c.center().y(), c.center().z() + CGAL::sqrt(c.squared_radius()) / tan(coneAngle)}; //
+  gte::Vector<3, double> coneAxis{ 0, 0, 1 }; // assuming the plane is scanning vertically
+
+  auto res = fitter(static_cast<int32_t>(pts_converted.size()), pts_converted.data(),
+    maxIterations, updateLengthTolerance, errorDifferenceTolerance,
+    useConeInputAsInitialGuess, coneVertex, coneAxis, coneAngle);
+
+  //check result, maybe skip if it didn't converge
+  /*            DVector minLocation;
+            T minError;
+            T minErrorDifference;
+            T minUpdateLength;
+            size_t numIterations;
+            bool converged;*/
+
+  if (!res.converged) {
+    std::cout << "did not converge" << std::endl;
+    return;
+  }
+
+  axis = typename Kernel::Vector_3(coneAxis[0], coneAxis[1], coneAxis[2]);
+  apex = typename Kernel::Point_3(coneVertex[0] + mean_x, coneVertex[1] + mean_y, coneVertex[2] + mean_z);
+  aperture = coneAngle;
+
+  axis /= CGAL::sqrt(axis * axis);
+
+  // axis should point down for visualization
+  if (axis.z() > 0)
+    axis = -axis;
+
+  // Cone visualization
+  FT min = (std::numeric_limits<double>::max)();
+  FT max = -min;
+
+  for (auto p : pts) {
+    FT proj = (get(pm, p) - apex) * axis;
+    min = (std::min)(min, proj);
+    max = (std::max)(max, proj);
+  }
+
+  // Create visualization of cone
+  Vector_3 a = get(pm, *pts.begin()) - apex;
+  FT proj = a * axis;
+  a = a - axis * proj;
+  FT r1 = CGAL::sqrt(a * a);
+  a /= r1;
+  Vector_3 b = CGAL::cross_product(axis, a);
+  b /= CGAL::sqrt(b * b);
+
+  std::string name = "cone-" + std::to_string(idx) + ".polylines.txt";
+  std::ofstream ofile(name);
+  ofile << std::setprecision(17);
+  ofile << "2 " << apex << " " << (apex + (max * axis)) << std::endl;
+
+  const std::size_t segments = 500;
+
+  for (std::size_t i = 0; i < 5; i++) {
+    FT r = min + i * ((max - min)/4.0);
+    Point_3 c = apex + r * axis;
+    r = tan(aperture) * r;
+    ofile << segments;
+    for (std::size_t j = 0; j < segments; j++) {
+      FT angle = j * (2 * 3.14159265358979323846) / (segments - 1.0);
+      Point_3 p = c + r * (a * cos(angle) + b * sin(angle));
+      ofile << " " << p.x() << " " << p.y() << " " << p.z();
+    }
+    ofile << std::endl;
+  }
+//   std::cout << std::setprecision(18);
+//   std::cout << " " << apex.x() << " " << apex.y() << " " << apex.z() << std::endl;
+//   std::cout << "2 " << apex.x() << " " << apex.y() << " " << apex.z();
+  std::cout << coneAngle << std::endl;
+}
 
 template <typename Vector_3>
 const Vector_3& vertical_vector()
@@ -50,11 +169,32 @@ const Vector_3& vertical_vector()
 template <typename Iterator, typename PointMap,
           typename ScanlineIDMap>
 bool is_end_of_scanline (Iterator scanline_begin, Iterator it,
-                         PointMap,
+                         PointMap point_map,
                          ScanlineIDMap scanline_id_map,
                          const Tag_false&) // no fallback
 {
-  return (get (scanline_id_map, *scanline_begin)
+  using Point_3 = typename boost::property_traits<PointMap>::value_type;
+  using Vector_3 = typename Kernel_traits<Point_3>::Kernel::Vector_3;
+
+  if (std::distance(scanline_begin, it) < 3)
+    return false;
+
+  Iterator n_minus_1 = it - 1;
+  Iterator n_minus_2 = it - 2;
+
+  const Point_3& p = get(point_map, *it);
+  const Point_3& p_minus_1 = get(point_map, *n_minus_1);
+  const Point_3& p_minus_2 = get(point_map, *n_minus_2);
+
+  // End of scanline reached if inversion of direction
+  Vector_3 v21(p_minus_2, p_minus_1);
+  v21 = Vector_3(v21.x(), v21.y(), 0);
+  Vector_3 v10(p_minus_1, p);
+  v10 = Vector_3(v10.x(), v10.y(), 0);
+
+  if (v21 * v10 < 0)
+    return true;
+  else return (get (scanline_id_map, *scanline_begin)
           != get (scanline_id_map, *it));
 }
 
@@ -262,7 +402,7 @@ void orient_scanline (Iterator begin, Iterator end,
   {
 #ifdef CGAL_SCANLINE_ORIENT_VERBOSE
     if (!solver_success)
-      std::cerr << "Inverting because olver failed: ";
+      std::cerr << "Inverting because solver failed: ";
     else
       std::cerr << "Inverting because scanner under scanline: ";
 #endif
@@ -545,6 +685,151 @@ void scanline_orient_normals (PointRange& points, const NamedParameters& np = pa
   std::cerr << nb_scanlines << " scanline(s) identified (mean length = "
             << std::size_t(points.size() / double(nb_scanlines))
             << " point(s))" << std::endl;
+#endif
+}
+
+template <typename PointRange, typename NamedParameters = parameters::Default_named_parameters>
+void circular_scanline_orient_normals(PointRange& points, const NamedParameters& np = parameters::default_values())
+{
+  using parameters::choose_parameter;
+  using parameters::get_parameter;
+
+  using Iterator = typename PointRange::iterator;
+  using Value_type = typename std::iterator_traits<Iterator>::value_type;
+  using NP_helper = Point_set_processing_3_np_helper<PointRange, NamedParameters>;
+  using PointMap = typename NP_helper::Point_map;
+  using NormalMap = typename NP_helper::Normal_map;
+  using Point_3 = typename boost::property_traits<PointMap>::value_type;
+  using Vector_3 = typename boost::property_traits<NormalMap>::value_type;
+  using FT = typename Point_3::FT;
+
+  using No_map = Constant_property_map<Value_type, int>;
+
+  using ScanAngleMap = typename internal_np::Lookup_named_param_def
+    <internal_np::scan_angle_t, NamedParameters, No_map>::type;
+  using Fallback_scan_angle = Boolean_tag<std::is_same<ScanAngleMap, No_map>::value>;
+
+  using ScanlineIDMap = typename internal_np::Lookup_named_param_def
+    <internal_np::scanline_id_t, NamedParameters, No_map>::type;
+  using Fallback_scanline_ID = Boolean_tag<std::is_same<ScanlineIDMap, No_map>::value>;
+
+  using GPSTimeMap = typename internal_np::Lookup_named_param_def
+    <internal_np::gpstime_id_t, NamedParameters, No_map>::type;
+  using Fallback_gpstime = Boolean_tag<std::is_same<GPSTimeMap, No_map>::value>;
+
+  //CGAL_static_assertion_msg(NP_helper::has_normal_map(), "Error: no normal map");
+
+  PointMap point_map = NP_helper::get_point_map(points, np);
+  NormalMap normal_map = NP_helper::get_normal_map(points, np);
+  ScanAngleMap scan_angle_map = choose_parameter<ScanAngleMap>
+    (get_parameter(np, internal_np::scan_angle_map));
+  ScanlineIDMap scanline_id_map = choose_parameter<ScanlineIDMap>
+    (get_parameter(np, internal_np::scanline_id_map));
+  GPSTimeMap gpstime_map = choose_parameter<GPSTimeMap>
+    (get_parameter(np, internal_np::gpstime_id_map));
+
+  std::size_t nb_scanlines = 1;
+  if (!Fallback_gpstime())
+    std::sort(points.begin(), points.end(), [gpstime_map](const Value_type& a, const Value_type& b) -> bool {
+        return get(gpstime_map, a) < get(gpstime_map, b);
+      });
+
+#ifdef CGAL_SCANORIENT_DUMP_RANDOM_SCANLINES
+  std::ofstream ofile("scanlines.polylines.txt");
+  ofile.precision(18);
+#endif
+
+  CGAL::Bbox_3 bbox = CGAL::bbox_3
+  (boost::make_transform_iterator
+  (points.begin(), Property_map_to_unary_function<PointMap>(point_map)),
+    boost::make_transform_iterator
+    (points.end(), Property_map_to_unary_function<PointMap>(point_map)));
+
+  double bbox_diagonal
+    = CGAL::approximate_sqrt((bbox.xmax() - bbox.xmin()) * (bbox.xmax() - bbox.xmin())
+      + (bbox.ymax() - bbox.ymin()) * (bbox.ymax() - bbox.ymin())
+      + (bbox.zmax() - bbox.zmin()) * (bbox.zmax() - bbox.zmin()));
+  double limit = 0.05 * bbox_diagonal;
+
+  std::size_t exported = 0;
+  // 8000000 + 10000
+  if (true) {
+    for (std::size_t i = 0; i < 240; i++) {
+      auto beginIT = points.begin() + 8000000 + i * 500;
+      auto endIT = beginIT + 500;
+
+      std::string name = "cone-" + std::to_string(exported) + "-scanline.polylines.txt";
+      std::ofstream cfile(name);
+      cfile.precision(18);
+      cfile << std::distance(beginIT, endIT);
+      for (auto pit = beginIT; pit != endIT; pit++)
+        cfile << " " << get(point_map, *pit);
+      cfile << std::endl;
+
+      Point_3 apex;
+      Vector_3 axis;
+      FT aperture;
+      Point_set_processing_3::internal::fitCone(CGAL::make_range(beginIT, endIT), axis, apex, aperture, exported);
+
+      exported++;
+    }
+
+    return;
+  }
+
+  Iterator scanline_begin = points.begin();
+  for (Iterator it = points.begin(); it != points.end(); ++it)
+  {
+    bool force_cut = false;
+    if (it != points.begin())
+    {
+      Iterator prev = it; --prev;
+      force_cut = (CGAL::squared_distance(get(point_map, *prev),
+        get(point_map, *it)) > limit * limit);
+    }
+
+    if (Point_set_processing_3::internal::is_end_of_scanline
+    (scanline_begin, it, point_map, scanline_id_map,
+      Fallback_scanline_ID()) || force_cut)
+    {
+      if (std::distance(scanline_begin, it) > 60) {
+        Point_3 apex;
+        Vector_3 axis;
+        FT aperture;
+        Point_set_processing_3::internal::fitCone(CGAL::make_range(scanline_begin, it), axis, apex, aperture, exported);
+
+        std::string name = "cylinder-" + std::to_string(exported++) + "-scanline.polylines.txt";
+        std::ofstream ofile(name);
+        ofile.precision(18);
+        ofile << std::distance(scanline_begin, it);
+        for (auto pit = scanline_begin; pit != it; pit++)
+          ofile << " " << get(point_map, *pit);
+        ofile << std::endl;
+      }
+      Point_set_processing_3::internal::orient_scanline
+      (scanline_begin, it, point_map, normal_map,
+        scan_angle_map, Fallback_scan_angle());
+
+#ifdef CGAL_SCANORIENT_DUMP_RANDOM_SCANLINES
+      ofile << std::distance(scanline_begin, it);
+      for (Iterator it2 = scanline_begin; it2 != it; ++it2)
+        ofile << " " << get(point_map, *it2);
+      ofile << std::endl;
+#endif
+
+      scanline_begin = it;
+      ++nb_scanlines;
+    }
+  }
+
+  Point_set_processing_3::internal::orient_scanline
+  (scanline_begin, points.end(), point_map, normal_map,
+    scan_angle_map, Fallback_scan_angle());
+
+#ifdef CGAL_SCANLINE_ORIENT_VERBOSE
+  std::cerr << nb_scanlines << " scanline(s) identified (mean length = "
+    << std::size_t(points.size() / double(nb_scanlines))
+    << " point(s))" << std::endl;
 #endif
 }
 
