@@ -50,6 +50,7 @@ public:
   typedef typename Enclosing::Degree Degree; ///< Degree type.
   typedef typename Enclosing::Node_index Node_index; ///< Index type.
   typedef typename Enclosing::Maybe_node_index Maybe_node_index; ///< Index type.
+  typedef std::vector<std::size_t> Polygon_index_range;
 
   /*!
     \brief Self typedef for convenience.
@@ -96,6 +97,8 @@ private:
   /// \endcond
 
   Point_range m_points;
+  Polygon_index_range m_polygons;
+  std::vector<std::vector<std::pair<std::size_t, Point> > > m_clipped_polygons;
   std::uint8_t m_depth = 0;
   Global_coordinates m_global_coordinates{};
 
@@ -153,6 +156,14 @@ public:
   Point_range& points() { return m_points; }
 
   const Point_range& points() const { return m_points; }
+
+  Polygon_index_range& polygons() { return m_polygons; }
+
+  const Polygon_index_range& polygons() const { return m_polygons; }
+
+  std::vector<std::vector<std::pair<std::size_t, Point> > >& clipped_polygons() { return m_clipped_polygons; }
+
+  const std::vector<std::vector<std::pair<std::size_t, Point> > >&clipped_polygons() const { return m_clipped_polygons; }
 
   /// @}
 
@@ -214,7 +225,10 @@ public:
     \brief returns the number of points of this node.
    */
   std::size_t size() const {
-    return std::size_t(std::distance(m_points.begin(), m_points.end()));
+    if (m_polygons.size())
+      return std::size_t(std::distance(m_polygons.begin(), m_polygons.end()));
+    else
+      return std::size_t(std::distance(m_points.begin(), m_points.end()));
   }
 
   /// @}
@@ -229,7 +243,9 @@ public:
    * \param rhs node to compare with
    * \return whether the nodes have different topology.
    */
-  bool operator==(const Self& rhs) const = default;
+  bool operator==(const Self& rhs) const {
+    return true;
+  }
 
   friend std::ostream& operator<<(std::ostream& os, const Self& node) {
     return internal::print_orthtree_node(os, node);

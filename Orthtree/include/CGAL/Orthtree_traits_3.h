@@ -46,6 +46,7 @@ public:
   typedef typename GeomTraits::FT FT; ///< Number type.
   typedef typename GeomTraits::Point_3 Point_d; ///< Point type.
   typedef typename GeomTraits::Sphere_3 Sphere_d; ///< Sphere type.
+  typedef typename GeomTraits::Plane_3 Plane_d;
   typedef typename GeomTraits::Cartesian_const_iterator_3 Cartesian_const_iterator_d; ///< An iterator over the %Cartesian coordinates.
   typedef std::array<FT, Dimension::value> Array; ///< Array type.
 

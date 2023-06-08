@@ -25,6 +25,8 @@
 #include <CGAL/squared_distance_3.h>
 #include <CGAL/Dimension.h>
 
+#include <CGAL/linear_least_squares_fitting_3.h>
+
 #include <boost/function.hpp>
 #include <boost/core/span.hpp>
 #include <boost/iterator/iterator_facade.hpp>
@@ -74,6 +76,8 @@ public:
   /// @{
   typedef Traits_ Traits; ///< Geometry traits
   typedef PointRange_ PointRange; ///< Point range
+  typedef std::vector<std::vector<std::size_t> > Polygon_Range;
+  typedef std::vector<std::size_t> Polygon_index_range;
   typedef PointMap_ PointMap; ///< Point map
   /// @}
 
@@ -84,6 +88,7 @@ public:
   typedef typename Traits::Point_d Point; ///< Point type.
   typedef typename Traits::Bbox_d Bbox; ///< Bounding box type.
   typedef typename Traits::Sphere_d Sphere; ///< Sphere type.
+  typedef typename Traits::Plane_d Plane;
 
   /// \cond SKIP_IN_MANUAL
   typedef typename Traits::Array Array; ///< Array type.
@@ -148,6 +153,8 @@ public:
   /// \cond SKIP_IN_MANUAL
   typedef typename PointRange::iterator Range_iterator;
   typedef typename std::iterator_traits<Range_iterator>::value_type Range_type;
+  typedef typename Polygon_Range::iterator Polygon_iterator;
+  typedef typename std::iterator_traits<Polygon_iterator>::value_type Polygon_type;
   typedef Orthtrees::internal::Cartesian_ranges<Traits> Cartesian_ranges;
   /// \endcond
 
@@ -157,6 +164,8 @@ private: // data members :
 
   Traits m_traits; /* the tree traits */
   PointRange& m_range;              /* input point range */
+  Polygon_Range m_polygons;
+  std::vector<Plane> m_polygon_planes;
   PointMap m_point_map;          /* property map: `value_type of InputIterator` -> `Point` (Position) */
 
   std::vector<Node> m_nodes;    /* nodes of the tree; root is always at index 0 */
@@ -200,12 +209,13 @@ public:
     \param traits the traits object.
   */
   Orthtree(PointRange& point_range,
-           PointMap point_map = PointMap(),
-           const FT enlarge_ratio = 1.2,
-           Traits traits = Traits())
+    PointMap point_map = PointMap(),
+    const FT enlarge_ratio = 1.2,
+    Traits traits = Traits())
     : m_traits(traits)
-      , m_range(point_range)
-      , m_point_map(point_map) {
+    , m_range(point_range)
+    , m_point_map(point_map)
+    , m_polygons() {
 
     m_nodes.emplace_back();
 
@@ -216,17 +226,17 @@ public:
     {
       const Point& p = get(m_point_map, *(point_range.begin()));
       std::size_t i = 0;
-      for (const FT& x: cartesian_range(p)) {
+      for (const FT& x : cartesian_range(p)) {
         bbox_min[i] = x;
         bbox_max[i] = x;
         ++i;
       }
     }
 
-    for (const Range_type& r: point_range) {
+    for (const Range_type& r : point_range) {
       const Point& p = get(m_point_map, r);
       std::size_t i = 0;
-      for (const FT& x: cartesian_range(p)) {
+      for (const FT& x : cartesian_range(p)) {
         bbox_min[i] = (std::min)(x, bbox_min[i]);
         bbox_max[i] = (std::max)(x, bbox_max[i]);
         ++i;
@@ -252,7 +262,82 @@ public:
     // save orthtree attributes
     m_bbox_min = construct_point_d_from_array(bbox_min);
     m_side_per_depth.push_back(bbox_max[0] - bbox_min[0]);
-    points(root()) = {point_range.begin(), point_range.end()};
+    points(root()) = { point_range.begin(), point_range.end() };
+  }
+
+  Orthtree(PointRange& point_range,
+    Polygon_Range& polygon_range,
+    PointMap point_map = PointMap(),
+    const FT enlarge_ratio = 1.2,
+    Traits traits = Traits())
+    : m_traits(traits)
+    , m_range(point_range)
+    , m_point_map(point_map)
+    , m_polygons(polygon_range) {
+
+    m_nodes.emplace_back();
+
+    Array bbox_min;
+    Array bbox_max;
+
+    // init bbox with first values found
+    {
+      const Point& p = get(m_point_map, *(point_range.begin()));
+      std::size_t i = 0;
+      for (const FT& x : cartesian_range(p)) {
+        bbox_min[i] = x;
+        bbox_max[i] = x;
+        ++i;
+      }
+    }
+
+    for (const Range_type& r : point_range) {
+      const Point& p = get(m_point_map, r);
+      std::size_t i = 0;
+      for (const FT& x : cartesian_range(p)) {
+        bbox_min[i] = (std::min)(x, bbox_min[i]);
+        bbox_max[i] = (std::max)(x, bbox_max[i]);
+        ++i;
+      }
+    }
+
+    Array bbox_centroid;
+    FT max_length = FT(0);
+    for (std::size_t i = 0; i < Dimension::value; ++i) {
+      bbox_centroid[i] = (bbox_min[i] + bbox_max[i]) / FT(2);
+      max_length = (std::max)(max_length, bbox_max[i] - bbox_min[i]);
+    }
+    max_length *= enlarge_ratio / FT(2);
+
+    for (std::size_t i = 0; i < Dimension::value; ++i) {
+      bbox_min[i] = bbox_centroid[i] - max_length;
+      bbox_max[i] = bbox_centroid[i] + max_length;
+    }
+
+    Construct_point_d_from_array construct_point_d_from_array
+      = m_traits.construct_point_d_from_array_object();
+
+    // save orthtree attributes
+    m_bbox_min = construct_point_d_from_array(bbox_min);
+    m_side_per_depth.push_back(bbox_max[0] - bbox_min[0]);
+    points(root()) = { point_range.begin(), point_range.end() };
+    m_nodes[root()].polygons().resize(polygon_range.size());
+    std::iota(m_nodes[root()].polygons().begin(), m_nodes[root()].polygons().end(), 0);
+
+    fill_polys(m_nodes[root()].polygons(), m_nodes[root()].clipped_polygons());
+
+    m_polygon_planes.resize(polygon_range.size());
+
+    std::size_t idx = 0;
+
+    for (const auto& poly : polygon_range) {
+      std::vector<Point> pts;
+      pts.reserve(poly.size());
+      for (const std::size_t& i : poly)
+        pts.push_back(get(m_point_map, point_range[i]));
+
+      CGAL::linear_least_squares_fitting_3(pts.begin(), pts.end(), m_polygon_planes[idx++], CGAL::Dimension_tag<0>());
+    }
   }
 
   /// @}
@@ -263,6 +348,7 @@ public:
   Orthtree(const Orthtree& other)
     : m_traits(other.m_traits)
       , m_range(other.m_range)
+      , m_polygons(other.m_polygons)
       , m_point_map(other.m_point_map)
       , m_nodes(other.m_nodes) // todo: copying will require some extra management
       , m_bbox_min(other.m_bbox_min)
@@ -272,6 +358,7 @@ public:
   Orthtree(Orthtree&& other)
     : m_traits(other.m_traits)
       , m_range(other.m_range)
+      , m_polygons(other.m_polygons)
       , m_point_map(other.m_point_map)
       , m_nodes(std::move(other.m_nodes))
       , m_bbox_min(other.m_bbox_min)
@@ -311,7 +398,7 @@ public:
     \param split_predicate determines whether or not a node needs to
     be subdivided.
    */
-  void refine(const Split_predicate& split_predicate) {
+  void refine(const Split_predicate& split_predicate, FT eps = 0) {
 
     // Initialize a queue of nodes that need to be refined
     std::queue<Node_index> todo;
@@ -335,7 +422,7 @@ public:
         }
 
         // Split the node, redistributing its points to its children
-        split(current);
+        split(current, eps);
 
       }
 
@@ -368,8 +455,8 @@ public:
     \param max_depth deepest a tree is allowed to be (nodes at this depth will not be split).
     \param bucket_size maximum points a node is allowed to contain.
    */
-  void refine(size_t max_depth = 10, size_t bucket_size = 20) {
-    refine(Orthtrees::Maximum_depth_and_maximum_number_of_inliers(max_depth, bucket_size));
+  void refine(FT eps = 0, size_t max_depth = 10, size_t bucket_size = 20) {
+    refine(Orthtrees::Maximum_depth_and_maximum_number_of_inliers(max_depth, bucket_size), eps);
   }
 
   /*!
@@ -453,13 +540,16 @@ public:
     return index(*node);
   }
 
-
   const Node& operator[](Node_index index) const {
     return m_nodes[index];
   }
 
   Node& operator[](Node_index index) {
     return m_nodes[index];
+  }
+
+  std::size_t num_nodes() const {
+    return m_nodes.size();
   }
 
   /*!
@@ -702,6 +792,14 @@ public:
     return m_nodes[n].points();
   }
 
+  const typename Node::Polygon_index_range& polygons(Node_index n) const {
+    return m_nodes[n].polygons();
+  }
+
+  const std::vector<std::vector<std::pair<std::size_t, Point> > >& clipped_polygons(Node_index n) const {
+    return m_nodes[n].clipped_polygons();
+  }
+
   typename Node::Global_coordinates global_coordinates(Node_index n) const {
     return m_nodes[n].global_coordinates();
   }
@@ -794,14 +892,14 @@ public:
   Contents of this node are _not_ propagated automatically.
   It is the responsibility of the caller to redistribute the points contained by a node after splitting
  */
-  void split(Node_index n) {
+  void split(Node_index n, FT eps) {
 
     // Make sure the node hasn't already been split
     CGAL_precondition (is_leaf(n));
 
     // Split the node to create children
     using Local_coordinates = typename Node::Local_coordinates;
-    for (int i = 0; i < Degree::value; i++) {
+    for (unsigned int i = 0; i < Degree::value; i++) {
       m_nodes.emplace_back(n, global_coordinates(n), depth(n) + 1, Local_coordinates{i});
     }
     // todo: this assumes that the new nodes are always allocated at the end
@@ -811,7 +909,12 @@ public:
     Point center = barycenter(n);
 
     // Add the node's points to its children
-    reassign_points(n, points(n).begin(), points(n).end(), center);
+    if (m_polygons.empty())
+      reassign_points(n, points(n).begin(), points(n).end(), center);
+    else {
+      std::vector<std::vector<std::pair<std::size_t, Point> > > polys_with_points;
+      reassign_polygons(n, polygons(n), m_nodes[n].clipped_polygons(), eps, center);
+    }
   }
 
   /*!
@@ -975,6 +1078,229 @@ public:
 
 private: // functions :
 
+  Point interpolate(FT a, FT b, FT l, const Point pa, const Point pb) {
+    FT f = CGAL::abs((a - l) / (a - b));
+    assert(f <= 1.0);
+    return Point((1 - f) * pa.x() + f * pb.x(), (1 - f) * pa.y() + f * pb.y(), (1 - f) * pa.z() + f * pb.z());
+  }
+
+  bool clip_polygon(std::size_t dimension, FT min, FT max, std::vector<std::pair<std::size_t, Point> >& poly) {
+    if (poly.empty())
+      return false;
+
+    assert(poly.size() >= 2);
+
+    std::vector<std::pair<std::size_t, Point> > tmp;
+
+    std::cout << "print poly before" << std::endl;
+
+    FT last = ((poly.back().first == std::size_t(-1)) ? poly.back().second : get(m_point_map, poly.back().first))[dimension];
+    bool last_inside = (min <= last && last <= max);
+    std::size_t last_index = poly.size() - 1;
+
+    for (std::size_t i = 0; i < poly; i++) {
+      FT d = ((poly[i].first == std::size_t(-1)) ? poly[i].second : get(m_point_map, poly[i].first))[dimension];
+
+      bool current_inside = (min <= d && d <= max);
+
+      if (last_inside) {
+        if (current_inside)
+          tmp.push_back(poly[i]);
+        else {
+          // Calculate intersection
+          const Point& l = poly[last_index].second;
+          const Point& c = poly[i].second;
+
+          // On min plane
+          if (d < min) {
+            assert(min <= last);
+            /*
+                        FT f = CGAL::abs(d - min) / CGAL::abs(d - last);
+                        assert(f <= 1.0);
+
+                        Point_3 interpolated = Point_3((1 - f) * c.x() + f * l.x(), (1 - f) * c.y() + f * l.y(), (1 - f) * c.z() + f * l.z());*/
+            tmp.push_back(std::make_pair(poly[i].first, interpolate(d, last, min, c, l)));
+          }
+          else { // On max plane
+            assert(max < d);
+            assert(last <= max);
+            /*
+                        FT f = CGAL::abs(max - d) / CGAL::abs(d - last);
+                        assert(f <= 1.0);
+
+                        Point_3 interpolated = Point_3((1 - f) * c.x() + f * l.x(), (1 - f) * c.y() + f * l.y(), (1 - f) * c.z() + f * l.z());*/
+            tmp.push_back(std::make_pair(poly[i].first, interpolate(d, last, max, c, l)));
+          }
+        }
+      }
+      else {
+        if (current_inside) {
+          // Calculate intersection
+          const Point& l = poly[last_index].first;
+          const Point& c = poly[i].first;
+          // On min plane
+          if (last < min) {
+            assert(min <= d);
+            /*
+                        FT f = CGAL::abs(d - min) / CGAL::abs(d - last);
+                        assert(f <= 1.0);
+
+                        Point_3 interpolated = Point_3((1 - f) * c.x() + f * l.x(), (1 - f) * c.y() + f * l.y(), (1 - f) * c.z() + f * l.z());*/
+            tmp.push_back(std::make_pair(poly[last_index].first, interpolate(d, last, min, c, l)));
+            tmp.push_back(std::make_pair(poly[i].first, poly[i].second));
+          }
+          else { // On max plane
+            assert(d <= max);
+            assert(max < last);
+            /*
+                        FT f = CGAL::abs(max - d) / CGAL::abs(d - last);
+                        assert(f <= 1.0);
+
+                        Point_3 interpolated = Point_3((1 - f) * c.x() + f * l.x(), (1 - f) * c.y() + f * l.y(), (1 - f) * c.z() + f * l.z());*/
+            tmp.push_back(std::make_pair(poly[last_index].first, interpolate(d, last, max, c, l)));
+            tmp.push_back(std::make_pair(poly[i].first, poly[i].second));
+          }
+        }
+        else { // There are two intersections if the points are on different sides outside
+          if (d <= min && max <= last) {
+            tmp.push_back(std::make_pair(poly[last_index].first, interpolate(d, last, max, c, l)));
+            tmp.push_back(std::make_pair(poly[i].first, interpolate(d, last, min, c, l)));
+          }
+          else if (last <= min && max <= d) {
+            tmp.push_back(std::make_pair(poly[last_index].first, interpolate(d, last, min, c, l)));
+            tmp.push_back(std::make_pair(poly[i].first, interpolate(d, last, max, c, l)));
+          }
+        }
+      }
+
+      last = d;
+      last_inside = current_inside;
+    }
+
+    poly = tmp;
+
+    std::cout << "print poly afterwards" << std::endl;
+  }
+
+  void clip_polygon_plane(std::size_t dimension, FT mid, const std::vector<std::pair<std::size_t, Point> >& poly, std::vector<std::pair<std::size_t, Point> >& lower, std::vector<std::pair<std::size_t, Point> >& upper) {
+    lower.clear();
+    upper.clear();
+
+    if (poly.empty())
+      return;
+
+    assert(poly.size() >= 2);
+
+    std::ofstream out_before("polygon-before_clip.polylines.txt");
+    out_before.precision(20);
+    out_before << poly.size() + 1;
+    out_before << " " << poly.back().second;
+
+    for (std::size_t i = 0; i < poly.size(); ++i)
+      out_before << " " << poly[i].second;
+
+    out_before << std::endl;
+    out_before.close();
+
+    FT last = poly.back().second[dimension];
+    bool last_lower = (last <= mid);
+    bool last_upper = (mid <= last);
+    std::size_t last_index = poly.size() - 1;
+
+    for (std::size_t i = 0; i < poly.size(); i++) {
+      FT d = poly[i].second[dimension];
+      bool clower = d <= mid;
+      bool cupper = mid <= d;
+
+      const Point& l = poly[last_index].second;
+      const Point& c = poly[i].second;
+
+      if (last_lower && clower)
+        lower.push_back(poly[i]);
+
+      if (last_upper && cupper)
+        upper.push_back(poly[i]);
+
+      // switched sides?
+      if (last_upper && !cupper)
+          upper.push_back(std::make_pair(i, interpolate(d, last, mid, c, l)));
+
+      if (last_lower && !clower)
+        lower.push_back(std::make_pair(i, interpolate(d, last, mid, c, l)));
+
+      if (!last_upper && cupper) {
+        upper.push_back(std::make_pair(last_index, interpolate(d, last, mid, c, l)));
+        upper.push_back(poly[i]);
+      }
+
+      if (!last_lower && clower) {
+        lower.push_back(std::make_pair(last_index, interpolate(d, last, mid, c, l)));
+        lower.push_back(poly[i]);
+      }
+
+      last = d;
+      last_index = i;
+      last_upper = cupper;
+      last_lower = clower;
+    }
+
+    if (!upper.empty()) {
+      std::ofstream out_upper("polygon-upper_clip.polylines.txt");
+      out_upper.precision(20);
+      out_upper << upper.size() + 1;
+      out_upper << " " << upper.back().second;
+
+      for (std::size_t i = 0; i < upper.size(); ++i)
+        out_upper << " " << upper[i].second;
+
+      out_upper << std::endl;
+      out_upper.close();
+    }
+
+    if (!lower.empty()) {
+      std::ofstream out_lower("polygon-lower_clip.polylines.txt");
+      out_lower.precision(20);
+      out_lower << lower.size() + 1;
+      out_lower << " " << lower.back().second;
+
+      for (std::size_t i = 0; i < lower.size(); ++i)
+        out_lower << " " << lower[i].second;
+
+      out_lower << std::endl;
+      out_lower.close();
+    }
+  }
+
+  void fill_polys(const Polygon_index_range& polys, std::vector<std::vector<std::pair<std::size_t, Point> > >& polys_with_points) const {
+    polys_with_points.resize(polys.size());
+    for (std::size_t i = 0; i < polys.size(); i++) {
+      polys_with_points[i].resize(m_polygons[polys[i]].size());
+      for (std::size_t j = 0; j < m_polygons[polys[i]].size(); j++)
+        polys_with_points[i][j] = std::make_pair(m_polygons[polys[i]][j], get(m_point_map, m_range[m_polygons[polys[i]][j]]));
+    }
+  }
+
+  bool intersects_polygon_bbox(Node_index n, const Plane &pl) {
+    // Construct all bbox corners and test side of plane
+    bool pos = false, neg = false;
+
+    Point center = barycenter(n);
+    FT side = m_side_per_depth[depth(n)];
+
+    for (int x = -1; x <= 1; x += 2)
+      for (int y = -1; y <= 1; y += 2)
+        for (int z = -1; z <= 1; z += 2) {
+          Point p(center.x() + x * side, center.y() + y * side, center.z() + z * side);
+          CGAL::Oriented_side s = pl.oriented_side(p);
+          if (s == CGAL::ON_POSITIVE_SIDE)
+            pos = true;
+          if (s == CGAL::ON_NEGATIVE_SIDE)
+            neg = true;
+        }
+
+    return pos && neg;
+  }
+
   void reassign_points(Node_index n, Range_iterator begin, Range_iterator end, const Point& center,
                        std::bitset<Dimension::value> coord = {},
                        std::size_t dimension = 0) {
@@ -1004,6 +1330,61 @@ private: // functions :
     std::bitset<Dimension::value> coord_right = coord;
     coord_right[dimension] = true;
     reassign_points(n, split_point, end, center, coord_right, dimension + 1);
+  }
+
+  void reassign_polygons(Node_index n, const Polygon_index_range &polys, std::vector<std::vector<std::pair<std::size_t, Point> > > &clipped, FT eps, const Point& center,
+                         std::bitset<Dimension::value> coord = {},
+                         std::size_t dimension = 0) {
+
+    // Root case: reached the last dimension
+    if (dimension == Dimension::value) {
+      Node_index ch = child(n, coord.to_ulong());
+
+      m_nodes[ch].polygons() = polys;
+      m_nodes[ch].clipped_polygons() = clipped;
+
+      return;
+    }
+
+    Polygon_index_range upper_split, lower_split;
+    std::vector<std::vector<std::pair<std::size_t, Point> > > lower_clipped, upper_clipped;
+    std::size_t i = 0;
+
+    for (std::size_t i = 0; i < polys.size(); i++) {
+      std::vector<std::pair<std::size_t, Point> > clower, cupper;
+      if (polys[i] == 4) {
+        int a;
+        a = 4;
+      }
+      clip_polygon_plane(dimension, center[dimension], clipped[i], clower, cupper);
+      if (clower.size() == 0 && cupper.size() != clipped[i].size())
+        std::cout << "cupper size != clipped[i].size()" << std::endl;
+      if (cupper.size() == 0 && clower.size() != clipped[i].size())
+        std::cout << "clower size != clipped[i].size()" << std::endl;
+      if (cupper.size() == 2 || cupper.size() == 1 || clower.size() == 2 || clower.size() == 1)
+        std::cout << "polygon length is 1 or 2" << std::endl;
+
+      if (!clower.empty()) {
+        lower_split.push_back(polys[i]);
+        lower_clipped.push_back(std::move(clower));
+      }
+      if (!cupper.empty()) {
+        upper_split.push_back(polys[i]);
+        upper_clipped.push_back(std::move(cupper));
+      }
+    }
+
+    // Further subdivide the first side of the split
+    std::bitset<Dimension::value> coord_left = coord;
+    coord_left[dimension] = false;
+    assert(lower_split.size() == lower_clipped.size());
+    reassign_polygons(n, lower_split, lower_clipped, eps, center, coord_left, dimension + 1);
+
+    // Further subdivide the second side of the split
+    std::bitset<Dimension::value> coord_right = coord;
+    coord_right[dimension] = true;
+    assert(upper_split.size() == upper_clipped.size());
+    reassign_polygons(n, upper_split, upper_clipped, eps, center, coord_right, dimension + 1);
   }
 
   bool do_intersect(Node_index n, const Sphere& sphere) const {
