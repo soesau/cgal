@@ -70,6 +70,9 @@ else()
   message(STATUS "NOTICE: the LAS reader does not work with your version of Visual Studio 2017.")
 endif()
 
+# Optional dependency boost::filesystem
+find_package(Boost QUIET OPTIONAL_COMPONENTS filesystem)
+
 # Use Eigen
 find_package(Eigen3 3.1.0 QUIET) #(requires 3.1.0 or greater)
 include(CGAL_Eigen3_support)
@@ -100,30 +103,27 @@ if(TARGET CGAL::Eigen3_support)
   # Executables that require libpointmatcher
   find_package(libpointmatcher QUIET)
   include(CGAL_pointmatcher_support)
-  if(TARGET CGAL::pointmatcher_support)
+  if(TARGET CGAL::pointmatcher_support AND Boost_FILESYSTEM_FOUND)
     create_single_source_cgal_program("registration_with_pointmatcher.cpp")
     target_link_libraries(registration_with_pointmatcher PRIVATE ${CGAL_libs}
-                          CGAL::pointmatcher_support)
+                          CGAL::pointmatcher_support Boost::filesystem)
   else()
-    message(STATUS "NOTICE: registration with pointmatcher requires libpointmatcher and will not be compiled.")
+    message(STATUS "NOTICE: registration with pointmatcher requires libpointmatcher and boost filesystem, and will not be compiled.")
   endif()
 
   # Executables that require OpenGR
   if (NOT MSVC_VERSION OR MSVC_VERSION GREATER_EQUAL 1910)
     find_package(OpenGR QUIET)
     include(CGAL_OpenGR_support)
-      message(
-        STATUS
-          "NOTICE : OpenGR does not support your compiler, registration_with_OpenGR will not be compiled."
-      )
+      message(STATUS "NOTICE : OpenGR found!")
   endif()
 
-  if(TARGET CGAL::OpenGR_support)
+  if(TARGET CGAL::OpenGR_support AND Boost_FILESYSTEM_FOUND)
     create_single_source_cgal_program("registration_with_OpenGR.cpp")
     target_link_libraries(registration_with_OpenGR PRIVATE ${CGAL_libs}
-                          CGAL::OpenGR_support)
+                          CGAL::OpenGR_support Boost::filesystem)
   else()
-    message(STATUS "NOTICE: registration_with_OpenGR requires OpenGR, and will not be compiled.")
+    message(STATUS "NOTICE: registration_with_OpenGR requires OpenGR and boost filesystem, and will not be compiled.")
   endif()
 
   # Executables that require both libpointmatcher and OpenGR
@@ -132,7 +132,7 @@ if(TARGET CGAL::Eigen3_support)
     create_single_source_cgal_program("registration_with_opengr_pointmatcher_pipeline.cpp")
     target_link_libraries(
       registration_with_opengr_pointmatcher_pipeline PRIVATE ${CGAL_libs}
-      CGAL::pointmatcher_support CGAL::OpenGR_support)
+      CGAL::pointmatcher_support CGAL::OpenGR_support Boost::filesystem)
   else()
     message(STATUS "NOTICE: registration with OpenGR and pointmatcher requires both libpointmatcher and OpenGR, and will not be compiled.")
   endif()
