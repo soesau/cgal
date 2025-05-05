@@ -58,6 +58,9 @@ typename K::Boolean do_intersect_circle_iso_rectangle_2(const typename K::Circle
     distance += d * d;
   }
 
+  if (distance <= circle.squared_radius())
+    return true;
+
   // Note that with the way the distance above is computed, the distance is '0' if the box strictly
   // contains the circle. But since we use '>', we don't exit
   if(distance > circle.squared_radius())
