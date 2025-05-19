@@ -443,7 +443,7 @@ public:
         Point center = circle.center();
 
         // Check that the minimum distance to the box is smaller than the radius, otherwise there is
-        // no intersection.
+        // no intersection. `distance` stays at 0 if the center is inside or on `rec`.
         FT distance = FT(0);
         if (center.x() < rec.xmin())
         {
