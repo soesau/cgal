@@ -16,7 +16,7 @@ template<typename Kernel>
 void test(const std::vector<CGAL::Simple_cartesian<double>::Point_2> &points, const std::vector<std::array<std::size_t, 3> > &faces) {
   using Point_2 = typename Kernel::Point_2;
   using Triangle_2 = typename Kernel::Triangle_2;
-  using Iterator = std::vector<Triangle_2>::const_iterator;
+  using Iterator = typename std::vector<Triangle_2>::const_iterator;
   using Primitive = CGAL::AABB_triangle_primitive_2<Kernel, Iterator>;
   using Tree_traits = CGAL::AABB_traits_2<Kernel, Primitive>;
   using Tree = CGAL::AABB_tree<Tree_traits>;
