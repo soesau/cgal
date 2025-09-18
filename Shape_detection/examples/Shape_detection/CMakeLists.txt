@@ -5,6 +5,7 @@ cmake_minimum_required(VERSION 3.12...3.31)
 project(Shape_detection_Examples)
 
 find_package(CGAL REQUIRED COMPONENTS Core)
+find_package(Boost OPTIONAL_COMPONENTS geometry)
 
 create_single_source_cgal_program("efficient_RANSAC_with_custom_shape.cpp")
 create_single_source_cgal_program("efficient_RANSAC_with_parameters.cpp")
@@ -44,4 +45,8 @@ if(TARGET CGAL::Eigen3_support)
 
     target_link_libraries(${target} PRIVATE CGAL::Eigen3_support)
   endforeach()
+endif()
+
+if (TARGET boost::geometry)
+    target_link_libraries(region_growing_lines_on_segment_set PRIVATE boost::geometry)
 endif()

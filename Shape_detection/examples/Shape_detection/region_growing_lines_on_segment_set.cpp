@@ -1,84 +1,223 @@
-#include <CGAL/IO/PLY.h>
-#include <CGAL/Surface_mesh.h>
+#include <CGAL/Exact_predicates_inexact_constructions_kernel.h>
 #include <CGAL/Shape_detection/Region_growing/Region_growing.h>
 #include <CGAL/Shape_detection/Region_growing/Segment_set.h>
-#include <CGAL/Shape_detection/Region_growing/Polygon_mesh.h>
-#include <CGAL/Exact_predicates_inexact_constructions_kernel.h>
-#include <CGAL/IO/polygon_mesh_io.h>
+#include <CGAL/Polygon_2.h>
+#include <CGAL/IO/WKT.h>
+
+#include <typeinfo>
+
+//#include <boost/geometry/strategies/agnostic/simplify_douglas_peucker.hpp>
+
+#include <boost/geometry/algorithms/simplify.hpp>
+#include <boost/geometry/geometries/geometries.hpp>
+
 #include "include/utils.h"
 
 // Typedefs.
-using Kernel  = CGAL::Exact_predicates_inexact_constructions_kernel;
+using Kernel = CGAL::Exact_predicates_inexact_constructions_kernel;
+
+using Point_2 = typename Kernel::Point_2;
 using Point_3 = typename Kernel::Point_3;
+using Polygon_2 = CGAL::Polygon_2<Kernel>;
+using Vector_2 = typename Kernel::Vector_2;
+using Segment_2 = typename Kernel::Segment_2;
+using Segment_3 = typename Kernel::Segment_3;
+using FT = typename Kernel::FT;
 
-using Surface_mesh = CGAL::Surface_mesh<Point_3>;
-using Face_range   = typename Surface_mesh::Face_range;
-using Edge_range   = typename Surface_mesh::Edge_range;
+using Segment_range = std::vector<Segment_2>;
+using Item = typename Segment_range::const_iterator;
 
-using One_ring_query = CGAL::Shape_detection::Polygon_mesh::One_ring_neighbor_query<Surface_mesh>;
-using Plane_region   = CGAL::Shape_detection::Polygon_mesh::Least_squares_plane_fit_region<Kernel, Surface_mesh>;
-using RG_planes      = CGAL::Shape_detection::Region_growing<One_ring_query, Plane_region>;
+using Segment_map = CGAL::Dereference_property_map<const Segment_2, Item>;
 
-using Polyline_graph     = CGAL::Shape_detection::Polygon_mesh::Polyline_graph<Surface_mesh>;
-using Segment_range      = typename Polyline_graph::Segment_range;
-using Segment_map        = typename Polyline_graph::Segment_map;
+using Region_type = CGAL::Shape_detection::Segment_set::Least_squares_line_fit_region<Kernel, Item, Segment_map>;
 
-using Line_region  = CGAL::Shape_detection::Segment_set::Least_squares_line_fit_region<Kernel, Surface_mesh::Edge_index, Segment_map>;
-using Line_sorting = CGAL::Shape_detection::Segment_set::Least_squares_line_fit_sorting<Kernel, Surface_mesh::Edge_index, Polyline_graph, Segment_map>;
-using RG_lines     = CGAL::Shape_detection::Region_growing<Polyline_graph, Line_region>;
+struct Neighbor_query {
+  Neighbor_query(Segment_range &range) : begin(range.begin()), end(range.end()) {}
+  Item begin, end;
+
+  std::map<Item, std::vector<Item> > m_neighbors;
+
+  void operator()(
+    Item query, std::vector<Item>& neighbors) const {
+    assert(query != end);
+    if (query == begin)
+      neighbors.push_back(end - 1);
+    else neighbors.push_back(query - 1);
+
+    if (query + 1 == end)
+      neighbors.push_back(begin);
+    else
+      neighbors.push_back(query + 1);
+
+    assert(neighbors[0] != end);
+    assert(neighbors[1] != end);
+  }
+};
+using Region_growing = CGAL::Shape_detection::Region_growing<Neighbor_query, Region_type>;
+
+std::string files[] = {
+"20250512_staircase_holes_0",
+"20250605_diagonal_staircase_0",
+"20250605_diagonal_staircase_1",
+"20250605_diagonal_staircase_2",
+"20250605_diagonal_staircase_3",
+"20250605_diagonal_staircase_4",
+"20250605_diagonal_staircase_5",
+"20250605_diagonal_staircase_6",
+"20250605_smoothing_issues_0",
+"case2_0",
+"case2_1",
+"case2_10",
+"case2_11",
+"case2_12",
+"case2_13",
+"case2_14",
+"case2_15",
+"case2_16",
+"case2_17",
+"case2_18",
+"case2_19",
+"case2_2",
+"case2_20",
+"case2_21",
+"case2_22",
+"case2_23",
+"case2_24",
+"case2_25",
+"case2_3",
+"case2_4",
+"case2_5",
+"case2_6",
+"case2_7",
+"case2_8",
+"case2_9"
+};
+
+std::vector<double> eps = { 0.1, 0.2, 0.3, 0.4, 0.5, 0.6 };
+
+template<typename Primitive_and_region_range, typename SegmentMap>
+std::vector<Segment_2> get_segments(const Primitive_and_region_range &regions, SegmentMap map) {
+  std::vector<Segment_2> segments;
+  for (const auto &r : regions) {
+    FT low = (std::numeric_limits<double>::max)();
+    FT high = -low;
+    typename Primitive_and_region_range::value_type::first_type p = r.first;
+    Point_2 origin = p.point(0);
+    Vector_2 dir = p.to_vector();
+
+    for (const auto &i : r.second) {
+      Segment_2 seg = get(map, i);
+      FT proj = (seg.source() - origin) * dir;
+      low = (std::min)(low, proj);
+      high = (std::max)(high, proj);
+
+      proj = (seg.target() - origin) * dir;
+      low = (std::min)(low, proj);
+      high = (std::max)(high, proj);
+    }
+
+    if (!r.second.empty())
+      segments.push_back(Segment_2(origin + low * dir, origin + high * dir));
+  }
+  return segments;
+}
+
+void simplify(const Polygon_2 &in, const std::string &filename) {
+  typedef boost::geometry::model::point<double, 2, boost::geometry::cs::cartesian> point_t;
+  typedef boost::geometry::model::ring<point_t, false, true> ring_t;
+
+  ring_t polygon;
+
+  for (Segment_2 s : in.edges())
+    polygon.push_back(point_t(s.source().x(), s.source().y()));
+
+  polygon.push_back(point_t(in.edges().begin()->source().x(), in.edges().begin()->source().y()));
+
+  for (double e : eps) {
+    ring_t simplified;
+
+    boost::geometry::simplify(polygon, simplified, e);
+    std::cout << e << " " << int(simplified.size()) << std::endl;
+
+    std::ofstream fout(filename + "_dp_" + std::to_string(e) + "_" + std::to_string(simplified.size()) + ".polylines.txt", CGAL::IO::ASCII);
+    fout << int(simplified.size());
+
+    for (const point_t& p : simplified)
+      fout << " " << boost::geometry::get<0>(p) << " " << boost::geometry::get<1>(p) << " 0";
+    fout << std::endl;
+
+    fout.close();
+  }
+}
+
+void detect(const Polygon_2 &in, const std::string& filename) {
+  Segment_range segments;
+  segments.reserve(in.edges().size());
+
+  for (Segment_2 s : in.edges())
+    segments.push_back(s);
+
+  std::cout << segments.size() << " segments in polygon" << std::endl;
+
+  std::ofstream out(filename + ".polylines.txt");
+  for (const Segment_2& s : segments)
+    out << "2 " << s.source().x() << " " << s.source().y() << " 0 " << s.target().x() << " " << s.target().y() << " 0" << std::endl;
+  out.close();
+
+  Neighbor_query neighbor_query(segments);
+  const FT          cos_max_angle = FT(0);
+  const std::size_t min_region_size = 1;
+
+  using Sorting = CGAL::Shape_detection::Segment_set::Least_squares_line_fit_sorting<Kernel, Item, Neighbor_query, Segment_map>;
+
+  Sorting sorting(
+    segments, neighbor_query);
+  sorting.sort();
+
+  for (double e : eps) {
+    Region_type region_type(
+      CGAL::parameters::
+      maximum_distance(e).
+      cosine_of_maximum_angle(cos_max_angle).
+      minimum_region_size(min_region_size));
+
+    std::vector< std::pair< typename Region_type::Primitive, std::vector<Item> > > regions;
+    Region_growing region_growing(
+      segments, neighbor_query, region_type);
+    region_growing.detect(std::back_inserter(regions));
+
+    std::cout << regions.size() << " segments detected" << std::endl;
+
+    std::vector<Segment_2> region_segments = get_segments(regions, Segment_map());
+
+    std::ofstream fout(filename + "_sd_" + std::to_string(e) + "_" + std::to_string(region_segments.size()) + ".polylines.txt", CGAL::IO::ASCII);
+    for (const Segment_2& s : region_segments)
+      fout << "2  " << s.source().x() << " " << s.source().y() << " 0 " << s.target().x() << " " << s.target().y() << " 0" << std::endl;
+
+    fout.close();
+  }
+}
+
+void detect_staircases(const Polygon_2 &in, ) {
+
+}
 
 int main(int argc, char *argv[]) {
+  for (std::string filename : files) {
+    Polygon_2 p;
+    std::string path = "data/" + filename + ".txt";
+    std::ifstream file(path, CGAL::IO::ASCII);
 
-  // Load data either from a local folder or a user-provided file.
-  const bool is_default_input = argc > 1 ? false : true;
-  const std::string filename = is_default_input ? CGAL::data_file_path("meshes/am.off") : argv[1];
+    std::cout << path << std::endl;
 
-  Surface_mesh surface_mesh;
-  if (!CGAL::IO::read_polygon_mesh(filename, surface_mesh)) {
-    std::cerr << "ERROR: cannot read the input file!" << std::endl;
-    return EXIT_FAILURE;
+    if (!CGAL::IO::read_polygon_WKT(file, p)) {
+      std::cout << "Error: File could not be found or read!" << std::endl;
+      continue;
+    }
+
+    simplify(p, "results/" + filename);
+    detect(p, "results/" + filename);
   }
-  const Face_range face_range = faces(surface_mesh);
-  const Edge_range edge_range = edges(surface_mesh);
-  std::cout << "* number of input faces: " << face_range.size() << std::endl;
-  std::cout << "* number of input edges: " << edge_range.size() << std::endl;
-  assert(!is_default_input || face_range.size() == 7320);
-  assert(!is_default_input || edge_range.size() == 10980);
-
-  // Find planar regions.
-  One_ring_query one_ring_query(surface_mesh);
-  Plane_region plane_region(surface_mesh);
-  RG_planes rg_planes(face_range, one_ring_query, plane_region);
-
-  std::vector<typename RG_planes::Primitive_and_region> regions;
-  rg_planes.detect(std::back_inserter(regions));
-  std::cout << "* number of found planar regions: " << regions.size() << std::endl;
-  assert(!is_default_input || regions.size() == 9);
-
-  std::string fullpath = (argc > 2 ? argv[2] : "regions_sm.ply");
-  utils::save_polygon_mesh_regions(surface_mesh, regions, fullpath);
-
-  // Find linear regions.
-  Polyline_graph pgraph(surface_mesh, rg_planes.region_map());
-  const auto& segment_range = pgraph.segment_range();
-  std::cout << "* number of extracted segments: " << segment_range.size() << std::endl;
-
-  Line_region line_region(CGAL::parameters::segment_map(pgraph.segment_map()));
-  Line_sorting line_sorting(
-    segment_range, pgraph, CGAL::parameters::segment_map(pgraph.segment_map()));
-  line_sorting.sort();
-
-  RG_lines rg_lines(
-    segment_range, line_sorting.ordered(), pgraph, line_region);
-
-  std::vector<typename RG_lines::Primitive_and_region> subregions;
-  rg_lines.detect(std::back_inserter(subregions));
-  std::cout << "* number of found linear regions: " << subregions.size() << std::endl;
-  assert(!is_default_input || subregions.size() == 21);
-
-  fullpath = (argc > 2 ? argv[2] : "subregions_sm.ply");
-  utils::save_segment_regions_3<Kernel, std::vector<typename RG_lines::Primitive_and_region>, Segment_map>(
-    subregions, fullpath, pgraph.segment_map());
 
   return EXIT_SUCCESS;
 }
