@@ -93,7 +93,7 @@ std::string files[] = {
 "case2_9"
 };
 
-std::vector<double> eps = { 0.1, 0.2, 0.3, 0.4, 0.5, 0.6 };
+std::vector<double> eps = { 0.2, 0.3, 0.4, 0.5 };
 
 template<typename Primitive_and_region_range, typename SegmentMap>
 std::vector<Segment_2> get_segments(const Primitive_and_region_range &regions, SegmentMap map) {
@@ -150,19 +150,28 @@ void simplify(const Polygon_2 &in, const std::string &filename) {
   }
 }
 
+void export_WKT(const std::vector<Point_2> &segment, const std::string &filename) {
+  if (segment.empty())
+    return;
+
+  std::ofstream fout(filename + ".wkt.txt", CGAL::IO::ASCII);
+
+  fout << "POLYGON((" << segment[0].x() << ", " << segment[0].y();
+
+  for (std::size_t i = 1; i < segment.size(); i++)
+    fout << ", " << segment[i].x() << ", " << segment[i].y();
+
+  fout << "))" << std::endl;
+
+  fout.close();
+}
+
 void detect(const Polygon_2 &in, const std::string& filename) {
   Segment_range segments;
   segments.reserve(in.edges().size());
 
   for (Segment_2 s : in.edges())
     segments.push_back(s);
-
-  std::cout << segments.size() << " segments in polygon" << std::endl;
-
-  std::ofstream out(filename + ".polylines.txt");
-  for (const Segment_2& s : segments)
-    out << "2 " << s.source().x() << " " << s.source().y() << " 0 " << s.target().x() << " " << s.target().y() << " 0" << std::endl;
-  out.close();
 
   Neighbor_query neighbor_query(segments);
   const FT          cos_max_angle = FT(0);
@@ -198,12 +207,165 @@ void detect(const Polygon_2 &in, const std::string& filename) {
   }
 }
 
-void detect_staircases(const Polygon_2 &in, ) {
+FT smallest_edge_length(const Polygon_2 &in) {
+  FT min_length = (std::numeric_limits<double>::max)();
+  for (Segment_2 s : in.edges())
+    min_length = (std::min)(min_length, s.squared_length());
+  return CGAL::sqrt(min_length);
+}
 
+FT manhattan_length(const Segment_2 &s) {
+  return CGAL::abs(s.source().x() - s.target().x()) + CGAL::abs(s.source().y() - s.target().y());
+}
+
+void smooth(std::vector<Point_2> &polyline) {
+  Vector_2 prev = polyline[0] - CGAL::ORIGIN;
+
+  for (std::size_t i = 1; i <= polyline.size() - 2; ++i)
+  {
+    Vector_2 curr = polyline[i] - CGAL::ORIGIN;
+    Vector_2 next = polyline[i + 1] - CGAL::ORIGIN;
+
+    polyline[i] = CGAL::ORIGIN + (prev + 2 * curr + next) / 4;
+    prev = curr;
+  }
+}
+
+void preserve_long_segments(const Polygon_2 &in, const std::string &fn, bool smoothing) {
+  typedef boost::geometry::model::point<double, 2, boost::geometry::cs::cartesian> point_t;
+  typedef boost::geometry::model::ring<point_t, false, true> ring_t;
+  typedef boost::geometry::model::linestring<point_t> polyline_t;
+
+  std::string filename = fn;
+  if (smoothing)
+    filename += "_lss_";
+  else
+    filename += "_ls_";
+
+  FT edge_length = smallest_edge_length(in);
+
+  bool first = false;
+  std::size_t idx = 0;
+
+  for (double e : eps) {
+    Polygon_2::Edge_const_circulator start = in.edges_circulator();
+    Polygon_2::Edge_const_circulator curr = start;
+    std::vector<Point_2> out;
+    // Search first long edge.
+    bool found = false;
+    do {
+      if (manhattan_length(*curr) > 4) {
+        found = true;
+        break;
+      }
+    } while (++curr != start);
+
+    if (!found) { // use DP for full polygon
+      ring_t polygon;
+      polygon.reserve(in.vertices().size() + 1);
+      for (const Point_2& p : in.vertices())
+        polygon.push_back(point_t(p.x(), p.y()));
+
+      polygon.push_back(point_t(in.vertices_begin()->x(), in.vertices_begin()->y()));
+
+      ring_t simplified;
+      boost::geometry::simplify(polygon, simplified, e);
+
+      out.reserve(simplified.size());
+
+      for (const point_t& p : simplified)
+        out.push_back(Point_2(boost::geometry::get<0>(p), boost::geometry::get<1>(p)));
+    }
+    else {
+      start = curr;
+      std::vector<Point_2> segment;
+      out.reserve(in.vertices().size());
+      segment.reserve(in.vertices().size());
+      do {
+        if (manhattan_length(*curr) > 6) {
+          if (segment.empty())
+            out.push_back(curr->source());
+          else { // end of small segment, simplify it
+            segment.push_back(curr->source());
+
+            if (smoothing)
+              smooth(segment);
+
+            if (first) {
+              //export_WKT(segment, filename + std::to_string(idx++) + "_" + std::to_string(segment.size() - 1));
+              std::ofstream fout(filename + std::to_string(idx++) + "_" + std::to_string(segment.size() - 1) + ".polylines.txt", CGAL::IO::ASCII);
+
+              fout << "2 " << segment[0].x() << " " << segment[0].y() << " 0 ";
+              for (std::size_t i = 1; i < segment.size() - 1; i++)
+                fout << segment[i].x() << " " << segment[i].y() << " 0\n2 " << segment[i].x() << " " << segment[i].y() << " 0 ";
+
+              fout << segment.back().x() << " " << segment.back().y() << " 0" << std::endl;
+            }
+
+            polyline_t polygon;
+            polygon.reserve(segment.size());
+            for (const Point_2& p : segment)
+              polygon.push_back(point_t(p.x(), p.y()));
+
+            polyline_t simplified;
+            boost::geometry::simplify(polygon, simplified, e);
+
+            for (const point_t& p : simplified)
+              out.push_back(Point_2(boost::geometry::get<0>(p), boost::geometry::get<1>(p)));
+
+            segment.clear();
+          }
+        }
+        else
+          segment.push_back(curr->source());
+      } while (++curr != start);
+
+      // Still a segment to simplify?
+      if (!segment.empty()) {
+        segment.push_back(curr->source());
+
+        if (smoothing)
+          smooth(segment);
+
+        if (first) {
+          std::ofstream fout(filename + std::to_string(idx) + "_" + std::to_string(segment.size() - 1) + ".polylines.txt", CGAL::IO::ASCII);
+
+          fout << "2 " << segment[0].x() << " " << segment[0].y() << " 0 ";
+          for (std::size_t i = 1; i < segment.size() - 1; i++)
+            fout << segment[i].x() << " " << segment[i].y() << " 0\n2 " << segment[i].x() << " " << segment[i].y() << " 0 ";
+
+          fout << segment.back().x() << " " << segment.back().y() << " 0" << std::endl;
+        }
+
+        polyline_t polygon;
+        polygon.reserve(segment.size());
+        for (const Point_2& p : segment)
+          polygon.push_back(point_t(p.x(), p.y()));
+
+        polyline_t simplified;
+        boost::geometry::simplify(polygon, simplified, e);
+
+        for (const point_t& p : simplified)
+          out.push_back(Point_2(boost::geometry::get<0>(p), boost::geometry::get<1>(p)));
+      }
+      else out.push_back(curr->source());
+    }
+
+    //export_WKT(out, filename + std::to_string(idx++) + "_" + std::to_string(out.size() - 1));
+    std::ofstream fout(filename + std::to_string(e) + "_" + std::to_string(out.size() - 1) + ".polylines.txt", CGAL::IO::ASCII);
+
+    fout << "2 " << out[0].x() << " " << out[0].y() << " 0 ";
+    for (std::size_t i = 1; i < out.size() - 1; i++)
+      fout << out[i].x() << " " << out[i].y() << " 0\n2 " << out[i].x() << " " << out[i].y() << " 0 ";
+
+    fout << out.back().x() << " " << out.back().y() << " 0" << std::endl;
+    fout.close();
+    first = false;
+  }
 }
 
 int main(int argc, char *argv[]) {
-  for (std::string filename : files) {
+  for (const std::string &filename : files) {
     Polygon_2 p;
     std::string path = "data/" + filename + ".txt";
     std::ifstream file(path, CGAL::IO::ASCII);
@@ -215,8 +377,26 @@ int main(int argc, char *argv[]) {
       continue;
     }
 
-    simplify(p, "results/" + filename);
-    detect(p, "results/" + filename);
+    std::string resultpath = "results/" + filename;
+
+    Segment_range segments;
+    segments.reserve(p.edges().size());
+
+    for (Segment_2 s : p.edges())
+      segments.push_back(s);
+
+    std::cout << segments.size() << " segments in polygon" << std::endl;
+
+    std::ofstream out(resultpath + ".polylines.txt");
+    for (const Segment_2& s : segments)
+      out << "2 " << s.source().x() << " " << s.source().y() << " 0 " << s.target().x() << " " << s.target().y() << " 0" << std::endl;
+    out.close();
+
+    preserve_long_segments(p, resultpath, false);
+    preserve_long_segments(p, resultpath, true);
+
+    //simplify(p, resultpath);
+    //detect(p, resultpath);
   }
 
   return EXIT_SUCCESS;
