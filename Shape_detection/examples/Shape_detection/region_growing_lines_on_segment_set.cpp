@@ -3,6 +3,7 @@
 #include <CGAL/Shape_detection/Region_growing/Segment_set.h>
 #include <CGAL/Polygon_2.h>
 #include <CGAL/IO/WKT.h>
+#include <CGAL/Frechet_distance.h>
 
 #include <typeinfo>
 
@@ -247,17 +248,22 @@ void preserve_long_segments(const Polygon_2 &in, const std::string &fn, bool smo
   bool first = false;
   std::size_t idx = 0;
 
+  static int counter = 0;
+
+
   for (double e : eps) {
     Polygon_2::Edge_const_circulator start = in.edges_circulator();
     Polygon_2::Edge_const_circulator curr = start;
     std::vector<Point_2> out;
     // Search first long edge.
+    std::size_t start_idx = 0;
     bool found = false;
     do {
       if (manhattan_length(*curr) > 4) {
         found = true;
         break;
       }
+      start_idx++;
     } while (++curr != start);
 
     if (!found) { // use DP for full polygon
@@ -351,8 +357,55 @@ void preserve_long_segments(const Polygon_2 &in, const std::string &fn, bool smo
       else out.push_back(curr->source());
     }
 
+    std::vector<Point_2> poly;
+    poly.reserve(in.vertices().size());
+    if (start_idx == 0)
+      for (const Point_2& p : in.vertices())
+        poly.push_back(p);
+    else {
+      for (auto it = in.vertices_begin() + start_idx;it != in.vertices_end();it++)
+        poly.push_back(*it);
+
+      for (auto it = in.vertices_begin(); it != in.vertices_begin() + start_idx; it++)
+        poly.push_back(*it);
+    }
+    poly.push_back(*(in.vertices_begin() + start_idx));
+
+    if (counter == 24) {
+      std::string out1, out2;
+      out1 = (smoothing) ? "poly1.smoothed_" : "poly1_";
+      out2 = (smoothing) ? "poly2.smoothed_" : "poly2_";
+
+      out1 += std::to_string(counter);
+      out2 += std::to_string(counter);
+
+      std::ofstream fout(out1 + ".polylines.txt", CGAL::IO::ASCII);
+
+      fout << "2 " << poly[0].x() << " " << poly[0].y() << " 0 ";
+      for (std::size_t i = 1; i < poly.size() - 1; i++)
+        fout << poly[i].x() << " " << poly[i].y() << " 0\n2 " << poly[i].x() << " " << poly[i].y() << " 0 ";
+
+      fout << poly.back().x() << " " << poly.back().y() << " 0" << std::endl;
+
+      fout.close();
+
+      std::ofstream fout2(out2 + ".polylines.txt", CGAL::IO::ASCII);
+
+      fout2 << "2 " << out[0].x() << " " << out[0].y() << " 0 ";
+      for (std::size_t i = 1; i < out.size() - 1; i++)
+        fout2 << out[i].x() << " " << out[i].y() << " 0\n2 " << out[i].x() << " " << out[i].y() << " 0 ";
+
+      fout2 << out.back().x() << " " << out.back().y() << " 0" << std::endl;
+
+      fout2.close();
+    }
+
+    counter++;
+
+    std::pair<double, double> res = CGAL::bounded_error_Frechet_distance(poly, out, 0.000001);
+
     //export_WKT(out, filename + std::to_string(idx++) + "_" + std::to_string(out.size() - 1));
-    std::ofstream fout(filename + std::to_string(e) + "_" + std::to_string(out.size() - 1) + ".polylines.txt", CGAL::IO::ASCII);
+    std::ofstream fout(filename + std::to_string(e) + "_" + std::to_string(res.second) + "_" + std::to_string(out.size() - 1) + ".polylines.txt", CGAL::IO::ASCII);
 
     fout << "2 " << out[0].x() << " " << out[0].y() << " 0 ";
     for (std::size_t i = 1; i < out.size() - 1; i++)
