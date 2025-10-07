@@ -159,52 +159,19 @@ int main(int argc, char * argv[])
     // decode parameters
     //***************************************
 
-    // usage
-    if (argc-1 < 2)
-    {
-      std::cerr << "Reads a point set, compute and orient its normals,\n";
-      std::cerr << "and save the point set.\n";
-      std::cerr << "If the input mesh has normals, print the normals deviation.\n";
-      std::cerr << "\n";
-      std::cerr << "Usage: " << argv[0] << " file_in file_out [options]\n";
-      std::cerr << "Input file formats are .off, .xyz and .pwn.\n";
-      std::cerr << "Output file formats are .xyz and .pwn.\n";
-      std::cerr << "Options:\n";
-      std::cerr << "  -estimate plane|quadric|vcm          Estimates normals direction\n";
-      std::cerr << "  using a tangent plane or quadric or vcm (default=quadric)\n";
-      std::cerr << "  -nb_neighbors_pca <int>              Number of neighbors\n";
-      std::cerr << "  to compute tangent plane (default=18)\n";
-      std::cerr << "  -nb_neighbors_jet_fitting <int>      Number of neighbors\n";
-      std::cerr << "  to compute quadric (default=18)\n";
-      std::cerr << "  -offset_radius_vcm <double>           Offset radius\n";
-      std::cerr << "  to compute VCM (default=0.1)\n";
-      std::cerr << "  -convolve_radius_vcm <double>         Convolve radius\n";
-      std::cerr << "  to compute VCM (default=0)\n";
-      std::cerr << "  -orient MST                          Orient normals\n";
-      std::cerr << "  using a Minimum Spanning Tree (default=MST)\n";
-      std::cerr << "  -nb_neighbors_mst <int>              Number of neighbors\n";
-      std::cerr << "  to compute the MST (default=18)\n";
-      std::cerr << "Running with " << argv[0] << "data/ChineseDragon-10kv.off ChineseDragon-10kv.pwn"
-                                   << " -nb_neighbors_jet_fitting 10 -nb_neighbors_mst 10\n";
-    }
 
     // Normals Computing options
     unsigned int nb_neighbors_pca_normals = 18; // K-nearest neighbors = 3 rings (estimate normals by PCA)
     unsigned int nb_neighbors_jet_fitting_normals = 18; // K-nearest neighbors (estimate normals by Jet Fitting)
-    unsigned int nb_neighbors_mst = 18; // K-nearest neighbors (orient normals by MST)
-    double offset_radius_vcm = 0.1; // Offset radius (estimate normals by VCM)
-    double convolve_radius_vcm = 0; // Convolve radius (estimate normals by VCM)
+    unsigned int nb_neighbors_mst = 25; // K-nearest neighbors (orient normals by MST)
+    double offset_radius_vcm = 0.4; // Offset radius (estimate normals by VCM)
+    double convolve_radius_vcm = 0.4; // Convolve radius (estimate normals by VCM)
     std::string estimate = "quadric"; // estimate normals by jet fitting
     std::string orient = "MST"; // orient normals using a Minimum Spanning Tree
 
     // decode parameters
-    std::string input_filename  = argc == 1 ?  CGAL::data_file_path("meshes/ChineseDragon-10kv.off") : argv[1];
-    std::string output_filename = argc == 1 ?  "ChineseDragon-10kv.pwn" : argv[2];
-    if (argc==1)
-    {
-      nb_neighbors_jet_fitting_normals = 10;
-      nb_neighbors_mst = 10;
-    }
+    std::string input_filename  = argc == 1 ?  "C:/data/ebp bund/0005 - Muendung-Mainz-2-BB-utm zone32 6stellig_mbes.xyz" : argv[1];
+    std::string output_filename = argc == 1 ?  "C:/data/ebp bund/0005 - Muendung-Mainz-2-BB-utm zone32 6stellig_mbes.pwn" : argv[2];
 
     for (int i=3; i+1<argc ; ++i)
     {
@@ -287,14 +254,35 @@ int main(int argc, char * argv[])
     else if (estimate == "vcm")
       run_vcm_estimate_normals(points, offset_radius_vcm, convolve_radius_vcm);
 
+    std::cout << points.size() << std::endl;
+
+    // Either z is large positive or y is large positive
+    for (auto &p : points) {
+      Vector &n = p.second;
+      if(n.z() < -0.5)
+        n = -n;
+    }
+    std::cout << points.size() << std::endl;
+
     // Orient normals.
     if (orient == "MST")
       run_mst_orient_normals(points, nb_neighbors_mst);
+    std::cout << points.size() << std::endl;
+
+    std::ofstream fout(output_filename);
+    for (const auto& p : points) {
+        const Point& pt = p.first;
+        const Vector& n = p.second;
+        fout << pt.x() << " " << pt.y() << " " << pt.z() << " "
+             << n.x() << " " << n.y() << " " << n.z() << "\n";
+    }
+    fout.close();
 
     //***************************************
     // Saves the point set
     //***************************************
 
+/*
     std::cerr << "Write file " << output_filename << std::endl << std::endl;
 
     if(!CGAL::IO::write_points(output_filename, points,
@@ -304,7 +292,7 @@ int main(int argc, char * argv[])
     {
       std::cerr << "Error: cannot write file " << output_filename << std::endl;
       return EXIT_FAILURE;
-    }
+    }*/
 
     // Returns accumulated fatal error
     std::cerr << "Tool returned " << accumulated_fatal_err << std::endl;
