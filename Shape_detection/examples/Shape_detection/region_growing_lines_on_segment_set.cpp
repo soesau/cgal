@@ -94,7 +94,7 @@ std::string files[] = {
 "case2_9"
 };
 
-std::vector<double> eps = { 0.2, 0.3, 0.4, 0.5 };
+std::vector<double> eps = { 0.3 };
 
 template<typename Primitive_and_region_range, typename SegmentMap>
 std::vector<Segment_2> get_segments(const Primitive_and_region_range &regions, SegmentMap map) {
@@ -237,11 +237,11 @@ void preserve_long_segments(const Polygon_2 &in, const std::string &fn, bool smo
   typedef boost::geometry::model::ring<point_t, false, true> ring_t;
   typedef boost::geometry::model::linestring<point_t> polyline_t;
 
-  std::string filename = fn;
-  if (smoothing)
-    filename += "_lss_";
-  else
-    filename += "_ls_";
+  std::string filename = fn + "_";
+//   if (smoothing)
+//     filename += "_lss_";
+//   else
+//     filename += "_ls_";
 
   FT edge_length = smallest_edge_length(in);
 
@@ -414,6 +414,16 @@ void preserve_long_segments(const Polygon_2 &in, const std::string &fn, bool smo
     fout << out.back().x() << " " << out.back().y() << " 0" << std::endl;
     fout.close();
     first = false;
+
+    Polygon_2 poly2(out.begin(), out.end());
+    if (poly2.area() < 0) {
+      std::cout << "order reversed" << std::endl;
+      poly2.reverse_orientation();
+    }
+
+    std::ofstream foutwkt(filename + std::to_string(e) + "_" + std::to_string(res.second) + "_" + std::to_string(out.size() - 1) + ".wkt", CGAL::IO::ASCII);
+    CGAL::IO::write_polygon_WKT(foutwkt, poly2);
+    foutwkt.close();
   }
 }
 
@@ -445,7 +455,7 @@ int main(int argc, char *argv[]) {
       out << "2 " << s.source().x() << " " << s.source().y() << " 0 " << s.target().x() << " " << s.target().y() << " 0" << std::endl;
     out.close();
 
-    preserve_long_segments(p, resultpath, false);
+    //preserve_long_segments(p, resultpath, false);
     preserve_long_segments(p, resultpath, true);
 
     //simplify(p, resultpath);
