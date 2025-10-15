@@ -502,7 +502,10 @@ namespace internal {
 
       // Update internal properties of the region.
       const bool is_well_created = m_region_type.update(region);
-      if (!is_well_created) return false;
+      if (!is_well_created) {
+        put(m_visited, seed, false);
+        return false;
+      }
 
       bool grown = true;
       std::vector<std::pair<const Item, const Item> > rejected, rejected_swap;
@@ -551,7 +554,12 @@ namespace internal {
         // The region expanded with the current primitive to its largest extent.
         // After refitting the growing may continue, but it is only continued if the refitted primitive still fits all elements of the region.
         if (grown) {
-          m_region_type.update(region);
+          if (!m_region_type.update(region)) {
+            for (const std::pair<const Item, const Item>& p : rejected)
+              put(m_visited, p.second, false);
+
+            return false;
+          }
 
           // Verify that associated elements are still within the tolerance.
           bool fits = true;

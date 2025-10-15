@@ -89,7 +89,7 @@ void save_point_regions_2(
 template<typename Kernel, typename Region, typename Point_map>
 void save_point_regions_3(
   const Region& regions,
-  const std::string fullpath,
+  const std::string &fullpath,
   const Point_map point_map = Point_map()) {
 
   using Point_3          = typename Kernel::Point_3;

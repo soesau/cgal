@@ -182,6 +182,10 @@ namespace Point_set {
 
     /// @}
 
+    void add_filter(std::function<bool(const Plane_3&)> func) {
+      m_filter = func;
+    }
+
     /// \name Access
     /// @{
 
@@ -304,7 +308,8 @@ namespace Point_set {
         std::tie(m_plane_of_best_fit, m_normal_of_best_fit) =
           get_plane_and_normal(region);
       }
-      return true;
+
+      return m_filter(m_plane_of_best_fit);
     }
 
     /// @}
@@ -359,6 +364,8 @@ namespace Point_set {
 
     Plane_3 m_plane_of_best_fit;
     Vector_3 m_normal_of_best_fit;
+
+    std::function<bool(const Plane_3&)> m_filter = [](const Plane_3&){return true;};
   };
 
 /*!
