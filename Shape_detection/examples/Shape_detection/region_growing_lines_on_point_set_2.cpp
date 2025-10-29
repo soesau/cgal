@@ -3,6 +3,8 @@
 #include <CGAL/Shape_detection/Region_growing/Point_set.h>
 #include <CGAL/grid_simplify_point_set.h>
 #include <CGAL/squared_distance_2.h>
+#include <CGAL/Exact_predicates_inexact_constructions_kernel.h>
+#include <CGAL/Optimal_transportation_reconstruction_2.h>
 
 #include "include/utils.h"
 #include <CGAL/IO/read_points.h>
@@ -223,6 +225,39 @@ void extract_polyline(const std::vector<Line_Regions> &lines, std::vector<std::v
   }
 }
 
+template<typename Points>
+void optimal_transport(const Points& points, const std::string &filename, std::size_t target) {
+  using Otr_2 = CGAL::Optimal_transportation_reconstruction_2<Kernel>;
+  Otr_2 otr2(points);
+  //otr2.run_under_wasserstein_tolerance(1.25);
+  otr2.run_until(target);
+
+  std::vector<Point_2> vertices;
+  std::vector<size_t> isolated_vertices;
+  std::vector<std::pair<size_t, size_t> > edges;
+
+  otr2.indexed_output(
+    std::back_inserter(vertices),
+    std::back_inserter(isolated_vertices),
+    std::back_inserter(edges));
+
+  std::ofstream output_obj(filename);
+  {
+//     std::vector<Point_2>::iterator vit;
+//     for (vit = vertices.begin(); vit != vertices.end(); vit++) {
+//       output_obj << "2 " << vit->x() << " " << vit->y() << " " << 0 << "\n";
+//     }
+
+    std::vector<std::pair<size_t, size_t>>::iterator eit;
+    for (eit = edges.begin(); eit != edges.end(); eit++) {
+      const Point_2& u = vertices[eit->first];
+      const Point_2& v = vertices[eit->second];
+      output_obj << "2 " << u.x() << " " << u.y() << " 0 " << v.x() << " " << v.y() << " 0" << std::endl;
+    }
+  }
+  output_obj.close();
+}
+
 
 int main(int argc, char *argv[]) {
 
@@ -359,7 +394,6 @@ int main(int argc, char *argv[]) {
     }
   }
 
-
   // Line detection
 
   // Default parameter values for the data file buildings_outline.xyz.
@@ -393,6 +427,24 @@ int main(int argc, char *argv[]) {
   rg_lines.detect(std::back_inserter(regions));
   std::cout << "* number of found lines: " << regions.size() << std::endl;
   assert(!is_default_input || regions.size() == 72);
+
+  std::vector<Point_2> pts2d;
+  for (const auto &r : regions)
+    for (auto &i : r.second)
+      pts2d.push_back(get(point_map, i));
+
+  std::ofstream fout("pts2d.xyz");
+  for (const Point_2 &p : pts2d)
+    fout << p.x() << " " << p.y() << " 0\n";
+  fout.close();
+
+  optimal_transport(pts2d, "out-2.polylines.txt", 2);
+  optimal_transport(pts2d, "out-3.polylines.txt", 3);
+  optimal_transport(pts2d, "out-4.polylines.txt", 4);
+  optimal_transport(pts2d, "out-5.polylines.txt", 5);
+  optimal_transport(pts2d, "out-10.polylines.txt", 10);
+  optimal_transport(pts2d, "out-30.polylines.txt", 30);
+  optimal_transport(pts2d, "out-half.polylines.txt", pts2d.size() >> 1);
 
   // Save regions to a file.
   const std::string fullpath = (argc > 2 ? argv[2] : fn + "_lines.ply");

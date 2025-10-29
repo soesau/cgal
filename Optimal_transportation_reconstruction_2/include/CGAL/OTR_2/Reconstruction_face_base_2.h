@@ -62,6 +62,8 @@ private:
 
   FT m_relevance[3];
 
+  std::size_t time_stamp_ = 0;
+
 public:
   Reconstruction_face_base_2()
   {
@@ -114,6 +116,15 @@ public:
   ~Reconstruction_face_base_2()
   {
     clean_all_samples();
+  }
+
+  typedef Tag_true Has_timestamp;
+
+  std::size_t time_stamp() const {
+    return time_stamp_;
+  }
+  void set_time_stamp(const std::size_t& ts) {
+    time_stamp_ = ts;
   }
 
   void init()

@@ -53,6 +53,7 @@ private:
   int       m_sample;
   Point     m_relocated;
   FT        m_relevance;
+  std::size_t time_stamp_ = 0;
 
 
 public:
@@ -93,6 +94,15 @@ public:
   }
 
   ~Reconstruction_vertex_base_2() { }
+
+  typedef Tag_true Has_timestamp;
+
+  std::size_t time_stamp() const {
+    return time_stamp_;
+  }
+  void set_time_stamp(const std::size_t& ts) {
+    time_stamp_ = ts;
+  }
 
   int  id() const { return m_id; }
   int& id() { return m_id; }
