@@ -78,6 +78,48 @@ void detect_walls(std::vector<std::pair<Point_3, Vector_3>> &input, FT eps, std:
   utils::save_point_regions_3<Kernel, std::vector<typename RG_planes::Primitive_and_region>, CGAL::First_of_pair_property_map<std::pair<Point_3, Vector_3>>>(regions, filename, CGAL::First_of_pair_property_map<std::pair<Point_3, Vector_3>>());
 }
 
+#include <CGAL/Simple_cartesian.h>
+#include <CGAL/point_generators_3.h>
+#include <CGAL/Orthogonal_k_neighbor_search.h>
+#include <CGAL/Search_traits_3.h>
+
+#include <tbb/blocked_range.h>
+#include <tbb/parallel_for.h>
+
+void smooth(std::vector<Point_2> &pts, std::size_t k, FT max_radius) {
+  using Traits = CGAL::Search_traits_2<Kernel>;
+  using Neighbor_search = CGAL::Orthogonal_k_neighbor_search<Traits>;
+  using Tree = Neighbor_search::Tree;
+  using Point_with_distance = Neighbor_search::Point_with_transformed_distance;
+
+  Tree tree(pts.begin(), pts.end());
+  tree.build<CGAL::Parallel_tag>();
+
+  tbb::parallel_for(tbb::blocked_range<std::size_t>(0, pts.size()),
+    [&](const tbb::blocked_range<std::size_t>& r)
+    {
+      for (std::size_t s = r.begin(); s != r.end(); ++s)
+      {
+        // Neighbor search can be instantiated from
+        // several threads at the same time
+        Neighbor_search search(tree, pts[s], k);
+
+        // neighbor search returns a set of pair of
+        // point and distance <Point_3,FT>, here we
+        // keep the points only
+        FT x = 0, y = 0;
+        std::size_t count = 0;
+        for (const Point_with_distance pwd : search)
+          if (pwd.second <= max_radius) {
+            x += pwd.first.x();
+            y += pwd.first.y();
+            count++;
+          }
+        pts[s] = Point_2(x / count, y / count);
+      }
+    });
+}
+
 template<typename Item, typename PointMap>
 Segment_2 get_segment(const Line_2 &l, std::vector<Item> points, PointMap pmap) {
   FT minp = (std::numeric_limits<float>::max)();
@@ -400,6 +442,31 @@ int main(int argc, char *argv[]) {
   const FT          sphere_radius   = FT(0.2);
   const FT          max_distance    = 0.4;
   const std::size_t min_region_size = 100;
+
+//   // Smooth points (does not provide better results in this case) enlargens gaps between points so region growing fails to connect
+//   std::vector<Point_2> pts2, pts2bkp;
+//   pts2.reserve(ps.size());
+//   pts2bkp.reserve(ps.size());
+//
+//   for (auto &p : ps) {
+//     pts2.push_back(p.first);
+//     pts2bkp.push_back(p.first);
+//   }
+//
+//   std::ofstream fout5("pts2d_before.xyz");
+//   for (const Point_2& p : pts2)
+//     fout5 << p.x() << " " << p.y() << " 0\n";
+//   fout5.close();
+//
+//   smooth(pts2, 8, sphere_radius);
+//
+//   std::ofstream fout2("pts2d_smoothed.xyz");
+//   for (const Point_2& p : pts2)
+//     fout2 << p.x() << " " << p.y() << " 0\n";
+//   fout2.close();
+//
+//   for (int i = 0;i<ps.size();i++)
+//     ps[i].first = pts2[i];
 
   Point_map_2 point_map(CGAL::make_random_access_property_map(ps));
   Normal_map_2 normal_map(CGAL::make_random_access_property_map(ps));

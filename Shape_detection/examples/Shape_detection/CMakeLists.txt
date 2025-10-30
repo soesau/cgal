@@ -10,6 +10,9 @@ create_single_source_cgal_program("efficient_RANSAC_with_custom_shape.cpp")
 create_single_source_cgal_program("efficient_RANSAC_with_parameters.cpp")
 create_single_source_cgal_program("efficient_RANSAC_with_point_access.cpp")
 
+find_package(TBB REQUIRED)
+include(CGAL_TBB_support)
+
 find_package(Eigen3 3.1.0 QUIET) # (3.1.0 or greater)
 include(CGAL_Eigen3_support)
 if(TARGET CGAL::Eigen3_support)
@@ -42,6 +45,6 @@ if(TARGET CGAL::Eigen3_support)
     region_growing_planes_on_polygon_mesh
     region_growing_lines_on_segment_set)
 
-    target_link_libraries(${target} PRIVATE CGAL::Eigen3_support)
+    target_link_libraries(${target} PRIVATE CGAL::CGAL CGAL::Eigen3_support CGAL::TBB_support)
   endforeach()
 endif()
