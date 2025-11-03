@@ -51,17 +51,46 @@ using Sorting = CGAL::Shape_detection::Point_set::Least_squares_plane_fit_sortin
 using RG_planes = CGAL::Shape_detection::Region_growing<Neighbor_query_3, Plane_region>;
 using Point_inserter = utils::Insert_point_colored_by_region_index<Item, Points_3, Point_map_3, Kernel::Plane_3>;
 
-void detect_walls(std::vector<std::pair<Point_3, Vector_3>> &input, FT eps, std::size_t min_region_size, const Vector_2 &wall_dir, const std::string &filename) {
+Point_3 get_center(std::vector<std::pair<Point_3, Vector_3>>& input, const typename RG_planes::Primitive_and_region &region) {
+  FT x = 0, y = 0, z = 0;
+
+  for (const auto &i : region.second) {
+    Point_3 p = i->first;
+    x += p.x();
+    y += p.y();
+    z += p.z();
+  }
+
+  x /= region.second.size();
+  y /= region.second.size();
+  z /= region.second.size();
+
+  return Point_3(x, y, z);
+}
+
+struct Segment {
+  FT pos;
+  Point_3 center;
+  std::size_t region_index;
+  bool front = false;
+  int position;
+  FT offset = 0;
+};
+
+void detect_walls(std::vector<std::pair<Point_3, Vector_3>> &input, FT eps, std::size_t min_region_size, const Line_2 &wall_dir, const std::string &filename) {
   Plane_region region_type(
     CGAL::parameters::
     maximum_distance(eps).
     cosine_of_maximum_angle(0).
     minimum_region_size(min_region_size));
 
-  FT l = wall_dir * wall_dir;
-  l = CGAL::sqrt(l);
+  Vector_2 dir = wall_dir.to_vector();
 
-  region_type.add_filter([=](const Kernel::Plane_3 &p) -> bool {return ::abs(Vector_3(wall_dir.x()/l, wall_dir.y()/l, 0) * p.orthogonal_vector()) < 0.15;});
+  FT l = dir * dir;
+  l = CGAL::sqrt(l);
+  dir = Vector_2(dir.x() / l, dir.y() / l);
+
+  region_type.add_filter([=](const Kernel::Plane_3 &p) -> bool {return ::abs(Vector_3(dir.x(), dir.y(), 0) * p.orthogonal_vector()) < 0.15;});
 
   // Create instances of the classes Neighbor_query and Region_type.
   Neighbor_query_3 neighbor_query(input, CGAL::parameters::sphere_radius(0.1));
@@ -75,7 +104,50 @@ void detect_walls(std::vector<std::pair<Point_3, Vector_3>> &input, FT eps, std:
 
   std::cout << regions.size() << " detected segments" << std::endl;
 
-  utils::save_point_regions_3<Kernel, std::vector<typename RG_planes::Primitive_and_region>, CGAL::First_of_pair_property_map<std::pair<Point_3, Vector_3>>>(regions, filename, CGAL::First_of_pair_property_map<std::pair<Point_3, Vector_3>>());
+  utils::save_point_regions_3<Kernel, std::vector<typename RG_planes::Primitive_and_region>, CGAL::First_of_pair_property_map<std::pair<Point_3, Vector_3>>>(regions, filename + ".ply", CGAL::First_of_pair_property_map<std::pair<Point_3, Vector_3>>());
+
+  std::vector<Segment> segments;
+  for (std::size_t i = 0;i < regions.size();i++) {
+    const auto& region = regions[i];
+    Point_3 center = get_center(input, region);
+    FT pos = (center.x() * dir.x() + center.y() * dir.y());
+    segments.push_back({ pos, center, i });
+  }
+
+  sort(segments.begin(), segments.end(), [](const Segment &a, const Segment &b) -> bool {return a.pos <= b.pos;});
+
+  Vector_2 ortho_dir(-dir.y(), dir.x());
+
+  // center to center vector will be well aligned with the line
+  // I can also check the orthogonal offset towards the line
+
+  std::vector<std::size_t> front, back;
+
+  for (std::size_t i = 0;i<segments.size();i++) {
+    Segment &s = segments[i];
+    Vector_3 c = s.center - Point_3(wall_dir.point(s.pos).x(), wall_dir.point(s.pos).y(), 0);
+    s.offset = (c.x() * ortho_dir.x() + c.y() * ortho_dir.y());
+    s.front = (s.offset < 0);
+    if (s.front)
+      front.push_back(s.region_index);
+    else
+      back.push_back(s.region_index);
+  }
+
+  std::vector<typename RG_planes::Primitive_and_region> fregions, bregions;
+  fregions.reserve(front.size());
+  bregions.reserve(back.size());
+
+  for (std::size_t i : front)
+    fregions.push_back(regions[i]);
+
+  for (std::size_t i : back)
+    bregions.push_back(regions[i]);
+
+  utils::save_point_regions_3<Kernel, std::vector<typename RG_planes::Primitive_and_region>, CGAL::First_of_pair_property_map<std::pair<Point_3, Vector_3>>>(fregions, filename + "_front.ply", CGAL::First_of_pair_property_map<std::pair<Point_3, Vector_3>>());
+  utils::save_point_regions_3<Kernel, std::vector<typename RG_planes::Primitive_and_region>, CGAL::First_of_pair_property_map<std::pair<Point_3, Vector_3>>>(bregions, filename + "_back.ply", CGAL::First_of_pair_property_map<std::pair<Point_3, Vector_3>>());
+
+  assert(segments[0].pos <= segments[1].pos);
 }
 
 #include <CGAL/Simple_cartesian.h>
@@ -306,9 +378,9 @@ int main(int argc, char *argv[]) {
   // Load xyz data either from a local folder or a user-provided file.
   const bool is_default_input = argc > 1 ? false : true;
   std::string fn;
-  //fn = "C:/data/ebp bund/0019 - Kostheim-1_utm zone32 6stellig_mbes";
+  fn = "C:/data/ebp bund/0019 - Kostheim-1_utm zone32 6stellig_mbes";
   //fn = "C:/data/ebp bund/0005 - Muendung-Mainz-2-BB-utm zone32 6stellig_mbes";
-  fn = "C:/data/ebp bund/0003 - Muendung-Mainz-9-SB-utm zone32 6stellig_mbes";
+  //fn = "C:/data/ebp bund/0003 - Muendung-Mainz-9-SB-utm zone32 6stellig_mbes";
   //std::ifstream in(is_default_input ? "C:/data/ebp bund/.pwn" : argv[1]);
   //std::ifstream in(is_default_input ? "C:/data/ebp bund/.pwn" : argv[1]);
 
@@ -493,7 +565,7 @@ int main(int argc, char *argv[]) {
   std::vector<typename RG_lines::Primitive_and_region> regions;
   rg_lines.detect(std::back_inserter(regions));
   std::cout << "* number of found lines: " << regions.size() << std::endl;
-  assert(!is_default_input || regions.size() == 72);
+  //assert(!is_default_input || regions.size() == 72);
 
   std::vector<Point_2> pts2d;
   for (const auto &r : regions)
@@ -505,20 +577,20 @@ int main(int argc, char *argv[]) {
     fout << p.x() << " " << p.y() << " 0\n";
   fout.close();
 
-  optimal_transport(pts2d, "out-2.polylines.txt", 2);
-  optimal_transport(pts2d, "out-3.polylines.txt", 3);
-  optimal_transport(pts2d, "out-4.polylines.txt", 4);
-  optimal_transport(pts2d, "out-5.polylines.txt", 5);
-  optimal_transport(pts2d, "out-10.polylines.txt", 10);
-  optimal_transport(pts2d, "out-30.polylines.txt", 30);
-  optimal_transport(pts2d, "out-half.polylines.txt", pts2d.size() >> 1);
+//   optimal_transport(pts2d, "out-2.polylines.txt", 2);
+//   optimal_transport(pts2d, "out-3.polylines.txt", 3);
+//   optimal_transport(pts2d, "out-4.polylines.txt", 4);
+//   optimal_transport(pts2d, "out-5.polylines.txt", 5);
+//   optimal_transport(pts2d, "out-10.polylines.txt", 10);
+//   optimal_transport(pts2d, "out-30.polylines.txt", 30);
+//   optimal_transport(pts2d, "out-half.polylines.txt", pts2d.size() >> 1);
 
   // Save regions to a file.
   const std::string fullpath = (argc > 2 ? argv[2] : fn + "_lines.ply");
   utils::save_point_regions_2<Kernel, std::vector<typename RG_lines::Primitive_and_region>, Point_map_2>(regions, fullpath, point_map);
   std::vector<std::vector<Point_2> > polylines;
   extract_polyline<typename RG_lines::Primitive_and_region, Point_map_2>(regions, polylines, point_map);
-  return 0;
+  //return 0;
 
   point_set.clear();
 
@@ -555,8 +627,8 @@ int main(int argc, char *argv[]) {
 //     idx++;
 //   }
 
-  for (std::size_t i = 0;i<(std::min<std::size_t>)(2, line_regions_3d.size());i++)
-    detect_walls(line_regions_3d[i], 0.03, 1200, regions[i].first.to_vector(), fn + "wall-" + std::to_string(i) + "-segments.ply");
+  for (std::size_t i = 0;i<line_regions_3d.size();i++)
+    detect_walls(line_regions_3d[i], 0.03, 1200, regions[i].first, fn + "wall-" + std::to_string(i) + "-segments");
 
   std::cout << timer.time() << " s for processing" << std::endl;
 
