@@ -77,7 +77,7 @@ struct Segment {
   FT offset = 0;
 };
 
-void detect_walls(std::vector<std::pair<Point_3, Vector_3>> &input, FT eps, std::size_t min_region_size, const Line_2 &wall_dir, const std::string &filename) {
+void detect_walls(std::vector<std::pair<Point_3, Vector_3>> &input, FT eps, std::size_t min_region_size, const Line_2 &wall_dir, const std::string &filename, std::vector<Point_3> &polyline) {
   Plane_region region_type(
     CGAL::parameters::
     maximum_distance(eps).
@@ -117,6 +117,9 @@ void detect_walls(std::vector<std::pair<Point_3, Vector_3>> &input, FT eps, std:
   sort(segments.begin(), segments.end(), [](const Segment &a, const Segment &b) -> bool {return a.pos <= b.pos;});
 
   Vector_2 ortho_dir(-dir.y(), dir.x());
+  FT l3 = ortho_dir * ortho_dir;
+  l3 = CGAL::sqrt(l);
+  ortho_dir = Vector_2(ortho_dir.x() / l3, ortho_dir.y() / l3);
 
   // center to center vector will be well aligned with the line
   // I can also check the orthogonal offset towards the line
@@ -128,6 +131,9 @@ void detect_walls(std::vector<std::pair<Point_3, Vector_3>> &input, FT eps, std:
     Vector_3 c = s.center - Point_3(wall_dir.point(s.pos).x(), wall_dir.point(s.pos).y(), 0);
     s.offset = (c.x() * ortho_dir.x() + c.y() * ortho_dir.y());
     s.front = (s.offset < 0);
+    if (s.front) {
+      polyline.push_back(s.center + Vector_3(ortho_dir.x() * 0.1, ortho_dir.y() * 0.1, 0));
+    }
     if (s.front)
       front.push_back(s.region_index);
     else
@@ -378,9 +384,9 @@ int main(int argc, char *argv[]) {
   // Load xyz data either from a local folder or a user-provided file.
   const bool is_default_input = argc > 1 ? false : true;
   std::string fn;
-  fn = "C:/data/ebp bund/0019 - Kostheim-1_utm zone32 6stellig_mbes";
+  //fn = "C:/data/ebp bund/0019 - Kostheim-1_utm zone32 6stellig_mbes";
   //fn = "C:/data/ebp bund/0005 - Muendung-Mainz-2-BB-utm zone32 6stellig_mbes";
-  //fn = "C:/data/ebp bund/0003 - Muendung-Mainz-9-SB-utm zone32 6stellig_mbes";
+  fn = "C:/data/ebp bund/0003 - Muendung-Mainz-9-SB-utm zone32 6stellig_mbes";
   //std::ifstream in(is_default_input ? "C:/data/ebp bund/.pwn" : argv[1]);
   //std::ifstream in(is_default_input ? "C:/data/ebp bund/.pwn" : argv[1]);
 
@@ -627,8 +633,18 @@ int main(int argc, char *argv[]) {
 //     idx++;
 //   }
 
-  for (std::size_t i = 0;i<line_regions_3d.size();i++)
-    detect_walls(line_regions_3d[i], 0.03, 1200, regions[i].first, fn + "wall-" + std::to_string(i) + "-segments");
+
+  for (std::size_t i = 0; i < line_regions_3d.size(); i++) {
+    std::vector<Point_3> polyline;
+    detect_walls(line_regions_3d[i], 0.03, 1200, regions[i].first, fn + "wall-" + std::to_string(i) + "-segments", polyline);
+    std::ofstream fout3(fn + std::to_string(i) + "_wall.polylines.txt");
+    fout3 << polyline.size() << std::endl;
+    for (const Point_3& p : polyline)
+      fout3 << p.x() << " " << p.y() << " " << p.z() << std::endl;
+    fout3.close();
+  }
+
+
 
   std::cout << timer.time() << " s for processing" << std::endl;
 
