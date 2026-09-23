@@ -326,7 +326,7 @@ public:
       \cgalParamDefault{false}
     \cgalParamNEnd
     \cgalParamNBegin{bbox_dilation_ratio}
-      \cgalParamDescription{Factor for extension of the bounding box of the input data to be used for the partition.}
+      \cgalParamDescription{Factor for extension of the bounding box of the input data to be used for the partition. Must be larger than 1.0.}
       \cgalParamType{FT}
       \cgalParamDefault{1.1}
     \cgalParamNEnd
@@ -424,9 +424,16 @@ public:
       // Check if there is already a coplanar polygon inserted
       bool skip = false;
       for (std::size_t i = 0; i < m_input_planes.size(); i++) {
-        if (m_input_planes[i] == exact_pl) {
-          if (verbose)
+        if (m_input_planes[i] == exact_pl || m_input_planes[i] == exact_pl.opposite()) {
+          if (verbose) {
             std::cout << i << ". input polygon is coplanar to " << (p + offset) << ". input polygon" << std::endl;
+            std::copy(m_input_polygons[i].begin(), m_input_polygons[i].end(), std::back_inserter(pts));
+            process_input_polygon(pts, pl, m_input_centroids[i], ch);
+            m_input_planes[i] = to_exact(pl);
+            m_input_polygons[i].resize(ch.size());
+            for (std::size_t j = 0; j < ch.size(); j++)
+              m_input_polygons[i][j] = pl.to_3d(ch[j]);
+          }
           skip = true;
           break;
         }
@@ -464,7 +471,7 @@ public:
       \cgalParamDefault{false}
     \cgalParamNEnd
     \cgalParamNBegin{bbox_dilation_ratio}
-      \cgalParamDescription{Factor for extension of the bounding box of the input data to be used for the partition.}
+      \cgalParamDescription{Factor for extension of the bounding box of the input data to be used for the partition. Must be larger than 1.0.}
       \cgalParamType{FT}
       \cgalParamDefault{1.1}
     \cgalParamNEnd
@@ -496,6 +503,11 @@ public:
       parameters::get_parameter(np, internal_np::max_octree_depth), 3);
     m_parameters.max_octree_node_size = parameters::choose_parameter(
       parameters::get_parameter(np, internal_np::max_octree_node_size), 40);
+
+    if (m_parameters.bbox_dilation_ratio <= 1.0) {
+      std::cout << "Warning: You set enlarge_bbox_ratio <= 1.0! The valid range is (1.0, +inf). Setting to 1.1!" << std::endl;
+      m_parameters.bbox_dilation_ratio = FT(11) / FT(10);
+    }
 
     std::cout.precision(17);
     if (m_input_polygons.size() == 0) {
