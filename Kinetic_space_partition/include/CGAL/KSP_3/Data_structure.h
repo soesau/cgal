@@ -292,6 +292,8 @@ public:
     return m_input_polygons;
   }
 
+  const std::map<std::size_t, std::size_t>& input_polygon_map() const { return m_input_polygon_map; }
+
   int support_plane_index(const std::size_t polygon_index) const {
     CGAL_assertion(m_input_polygon_map.find(polygon_index) != m_input_polygon_map.end());
     const std::size_t sp_idx = m_input_polygon_map.at(polygon_index);

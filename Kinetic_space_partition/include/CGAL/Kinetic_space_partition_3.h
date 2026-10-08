@@ -219,12 +219,36 @@ private:
     std::size_t split_plane;
     std::size_t index;
 
+    // Results of the finalization. They are extracted from m_data after the Finalizer has run
+    // and are the only data accessed by make_conformal() and the access functions afterwards.
+    struct Volume {
+      std::vector<std::size_t> faces; // Indices into face2vertices.
+      Point_3 centroid;
+    };
+
     std::vector<std::pair<Index, Index> > face_neighbors;
     std::vector<std::vector<Index> > face2vertices;
+    std::vector<Volume> volumes;
+    std::vector<Point_3> vertices;
+    std::vector<IkPoint_3> exact_vertices;
+    std::vector<std::size_t> face2sp; // Support plane index for each face.
+    std::vector<bool> face_part_of_input_polygon;
+    std::vector<typename Intersection_kernel::Plane_3> sp_exact_planes; // Exact plane for each support plane.
+    std::vector<std::size_t> sp_input_polygon; // Index into input_polygons for each support plane, std::size_t(-1) if none.
+    std::map<std::size_t, std::size_t> input2sp; // Maps index into input_polygons onto support plane index.
 
-    std::vector<typename Data_structure::Volume_cell> volumes;
-    //std::vector<std::vector<std::size_t> > face2vertices;
-    //std::vector<Point_3> exact_vertices;
+    void clear_finalized_data() {
+      face_neighbors.clear();
+      face2vertices.clear();
+      volumes.clear();
+      vertices.clear();
+      exact_vertices.clear();
+      face2sp.clear();
+      face_part_of_input_polygon.clear();
+      sp_exact_planes.clear();
+      sp_input_polygon.clear();
+      input2sp.clear();
+    }
 
     typename Octree::Node_index node;
   };
@@ -587,9 +611,7 @@ public:
     if (!m_volumes.empty()) {
       for (Sub_partition& node : m_partition_nodes) {
         node.m_data->reset_to_initialization();
-        node.face_neighbors.clear();
-        node.face2vertices.clear();
-        node.volumes.clear();
+        node.clear_finalized_data();
       }
       m_volumes.clear();
     }
@@ -647,29 +669,15 @@ public:
 
       if (m_parameters.verbose)
         std::cout << idx << ". partition with " << partition.input_polygons.size() << " input polygons split into " << partition.m_data->number_of_volumes() << " volumes" << std::endl;
+
+      extract_finalized_data(partition, idx);
     }
 
-    // Convert face_neighbors to pair<Index, Index>
     for (std::size_t i = 0; i < m_partitions.size(); i++) {
-      Sub_partition& partition = m_partition_nodes[m_partitions[i]];
+      const Sub_partition& partition = m_partition_nodes[m_partitions[i]];
 
-      for (std::size_t j = 0; j < partition.m_data->number_of_volumes(); j++) {
+      for (std::size_t j = 0; j < partition.volumes.size(); j++)
         m_volumes.push_back(std::make_pair(m_partitions[i], j));
-      }
-
-      partition.face_neighbors.resize(partition.m_data->face_to_volumes().size());
-      for (std::size_t j = 0; j < partition.m_data->face_to_volumes().size(); j++) {
-        auto& p = partition.m_data->face_to_volumes()[j];
-        partition.face_neighbors[j] = std::make_pair(Index(m_partitions[i], p.first), Index(m_partitions[i], p.second));
-      }
-
-      partition.face2vertices.resize(partition.m_data->face_to_vertices().size());
-
-      for (std::size_t j = 0; j < partition.m_data->face_to_vertices().size(); j++) {
-        partition.face2vertices[j].resize(partition.m_data->face_to_vertices()[j].size());
-        for (std::size_t k = 0; k < partition.m_data->face_to_vertices()[j].size(); k++)
-          partition.face2vertices[j][k] = std::make_pair(m_partitions[i], partition.m_data->face_to_vertices()[j][k]);
-      }
     }
 
     for (std::size_t i = 0; i < m_volumes.size(); i++)
@@ -683,7 +691,7 @@ public:
       for (const Index& f : f1) {
         std::vector<Index>& face = m_partition_nodes[f.first].face2vertices[f.second];
         for (std::size_t j = 0; j < face.size(); j++) {
-          auto it = pts2idx.emplace(m_partition_nodes[face[j].first].m_data->exact_vertices()[face[j].second], face[j]);
+          auto it = pts2idx.emplace(m_partition_nodes[face[j].first].exact_vertices[face[j].second], face[j]);
           if (!it.second)
             face[j] = it.first->second;
         }
@@ -697,16 +705,8 @@ public:
     make_conformal(0);
     conformal_time = timer.time();
 
-    // Clear unused data structures
-    for (std::size_t i = 0; i < m_partitions.size(); i++) {
-      m_partition_nodes[i].m_data->pface_neighbors().clear();
-      m_partition_nodes[i].m_data->face_to_vertices().clear();
-      m_partition_nodes[i].m_data->face_to_index().clear();
-      m_partition_nodes[i].m_data->face_to_volumes().clear();
-    }
-
     if (m_parameters.verbose)
-      std::cout << "ksp v: " << m_partition_nodes[0].m_data->vertices().size() << " f: " << m_partition_nodes[0].face2vertices.size() << " vol: " << m_volumes.size() << std::endl;
+      std::cout << "ksp v: " << m_partition_nodes[0].vertices.size() << " f: " << m_partition_nodes[0].face2vertices.size() << " vol: " << m_volumes.size() << std::endl;
 
     return;
   }
@@ -822,7 +822,7 @@ public:
 
       faces(v, std::back_inserter(faces_of_volume));
 
-      IkPoint_3 centroid = to_exact(m_partition_nodes[m_volumes[v].first].m_data->volumes()[m_volumes[v].second].centroid);
+      IkPoint_3 centroid = to_exact(m_partition_nodes[m_volumes[v].first].volumes[m_volumes[v].second].centroid);
 
       std::vector<bool> face_added(faces_of_volume.size(), false);
       std::vector<std::vector<Index> > vtx_of_faces(faces_of_volume.size());
@@ -939,7 +939,7 @@ private:
   const Point_3& volume_centroid(std::size_t volume_index) const {
     CGAL_assertion(volume_index < m_volumes.size());
     auto p = m_volumes[volume_index];
-    return m_partition_nodes[p.first].m_data->volumes()[p.second].centroid;
+    return m_partition_nodes[p.first].volumes[p.second].centroid;
   }
 
 
@@ -961,7 +961,7 @@ private:
     CGAL_assertion(m_volumes.size() > volume_index);
     auto p = m_volumes[volume_index];
 
-    for (std::size_t i : m_partition_nodes[p.first].m_data->volumes()[p.second].faces)
+    for (std::size_t i : m_partition_nodes[p.first].volumes[p.second].faces)
       *it++ = std::make_pair(p.first, i);
   }
 
@@ -974,7 +974,7 @@ private:
     \pre created partition
   */
   const Point_3& vertex(const Index& vertex_index) const {
-    return m_partition_nodes[vertex_index.first].m_data->vertices()[vertex_index.second];
+    return m_partition_nodes[vertex_index.first].vertices[vertex_index.second];
   }
 
   /*!
@@ -986,7 +986,7 @@ private:
     \pre created partition
   */
   const typename Intersection_kernel::Point_3& exact_vertex(const Index& vertex_index) const {
-    return m_partition_nodes[vertex_index.first].m_data->exact_vertices()[vertex_index.second];
+    return m_partition_nodes[vertex_index.first].exact_vertices[vertex_index.second];
   }
 
   /*!
@@ -1004,7 +1004,7 @@ private:
   template<class OutputIterator>
   void vertices(const Index& face_index, OutputIterator it) const {
     for (auto& p : m_partition_nodes[face_index.first].face2vertices[face_index.second])
-      *it++ = m_partition_nodes[p.first].m_data->vertices()[p.second];
+      *it++ = m_partition_nodes[p.first].vertices[p.second];
   }
 
   template<class OutputIterator>
@@ -1029,14 +1029,14 @@ private:
   void exact_vertices(const Index& face_index, OutputIterator it) const {
 
     for (auto& p : m_partition_nodes[face_index.first].face2vertices[face_index.second])
-      *it++ = m_partition_nodes[p.first].m_data->exact_vertices()[p.second];
+      *it++ = m_partition_nodes[p.first].exact_vertices[p.second];
   }
 
   template<class OutputIterator, class IndexOutputIterator>
   void exact_vertices(const Index& face_index, OutputIterator pit, IndexOutputIterator iit) const {
     for (auto& p : m_partition_nodes[face_index.first].face2vertices[face_index.second]) {
       *iit++ = p;
-      *pit++ = m_partition_nodes[p.first].m_data->exact_vertices()[p.second];
+      *pit++ = m_partition_nodes[p.first].exact_vertices[p.second];
     }
   }
 
@@ -1049,21 +1049,22 @@ private:
     for (std::size_t idx : m_partitions) {
       const Sub_partition& p = m_partition_nodes[idx];
       // Check if it contains this input polygon and get support plane index
-      int sp_idx = -1;
+      std::size_t sp_idx = static_cast<std::size_t>(-1);
       for (std::size_t i = 0; i < p.input_polygons.size(); i++) {
         if (p.input_polygons[i] == polygon_index) {
-          sp_idx = p.m_data->support_plane_index(i);
+          auto it = p.input2sp.find(i);
+          CGAL_assertion(it != p.input2sp.end());
+          if (it != p.input2sp.end())
+            sp_idx = it->second;
           break;
         }
       }
 
       // Continue if the partition does not contain this input polygon.
-      if (sp_idx == -1)
+      if (sp_idx == static_cast<std::size_t>(-1))
         continue;
 
-      auto pfaces = p.m_data->pfaces(sp_idx);
-      auto f2i = p.m_data->face_to_index();
-      const auto& f2sp = p.m_data->face_to_support_plane();
+      const auto& f2sp = p.face2sp;
 
       for (std::size_t i = 0; i < f2sp.size(); i++) {
         if (f2sp[i] == sp_idx)
@@ -1260,7 +1261,7 @@ private:
 
     for (std::size_t v = 0; v < m_volumes.size(); v++) {
       auto &vp = m_volumes[v];
-      for (const std::size_t f : m_partition_nodes[vp.first].m_data->volumes()[vp.second].faces) {
+      for (const std::size_t f : m_partition_nodes[vp.first].volumes[vp.second].faces) {
         auto& vtx = m_partition_nodes[vp.first].face2vertices[f];
         for (std::size_t i = 0; i < vtx.size(); i++) {
           vertex2neighbors[vtx[i]].push_back(vtx[(i + 1) % vtx.size()]);
@@ -1270,14 +1271,14 @@ private:
     }
 
     for (auto& p : vertex2neighbors) {
-      typename Intersection_kernel::Point_3 a = m_partition_nodes[p.first.first].m_data->exact_vertices()[p.first.second];
+      typename Intersection_kernel::Point_3 a = m_partition_nodes[p.first.first].exact_vertices[p.first.second];
       //Check pairwise collinear
       for (std::size_t i = 0; i < p.second.size(); i++) {
-        typename Intersection_kernel::Point_3 b = m_partition_nodes[p.second[i].first].m_data->exact_vertices()[p.second[i].second];
+        typename Intersection_kernel::Point_3 b = m_partition_nodes[p.second[i].first].exact_vertices[p.second[i].second];
         for (std::size_t j = i + 1; j < p.second.size(); j++) {
           if (p.second[i] == p.second[j])
             continue;
-          typename Intersection_kernel::Point_3 c = m_partition_nodes[p.second[j].first].m_data->exact_vertices()[p.second[j].second];
+          typename Intersection_kernel::Point_3 c = m_partition_nodes[p.second[j].first].exact_vertices[p.second[j].second];
           if (CGAL::collinear(a, b, c) && ((b - a) * (c - a) > 0)) {
             std::cout << "non-manifold v (" << p.first.first << ", " << p.first.second << ")" << std::endl;
             std::cout << " v (" << p.second[i].first << ", " << p.second[i].second << ")" << std::endl;
@@ -1300,7 +1301,7 @@ private:
 
             for (std::size_t v = 0; v < m_volumes.size(); v++) {
               auto& vp = m_volumes[v];
-              for (const std::size_t f : m_partition_nodes[vp.first].m_data->volumes()[vp.second].faces) {
+              for (const std::size_t f : m_partition_nodes[vp.first].volumes[vp.second].faces) {
                 auto& vtx = m_partition_nodes[vp.first].face2vertices[f];
                 bool hasa = false, hasb = false, hasc = false;
                 for (std::size_t k = 0; k < vtx.size(); k++) {
@@ -1318,10 +1319,10 @@ private:
                   vout.precision(20);
                   vout << vtx.size() + 1;
                   for (const auto& v : vtx) {
-                    vout << " " << from_exact(m_partition_nodes[v.first].m_data->exact_vertices()[v.second]);
+                    vout << " " << from_exact(m_partition_nodes[v.first].exact_vertices[v.second]);
                   }
 
-                  vout << " " << from_exact(m_partition_nodes[vtx[0].first].m_data->exact_vertices()[vtx[0].second]);
+                  vout << " " << from_exact(m_partition_nodes[vtx[0].first].exact_vertices[vtx[0].second]);
 
                   vout << std::endl;
                   vout.close();
@@ -1513,12 +1514,73 @@ private:
     return result;
   }
 
+  // Moves the results of the Finalizer from the kinetic data structure into the Sub_partition.
+  // Afterwards, make_conformal() and all access functions only use the data in the Sub_partition.
+  void extract_finalized_data(Sub_partition& partition, std::size_t idx) {
+    Data_structure& data = *partition.m_data;
+
+    // Volumes
+    partition.volumes.resize(data.volumes().size());
+    for (std::size_t i = 0; i < data.volumes().size(); i++) {
+      partition.volumes[i].faces = std::move(data.volumes()[i].faces);
+      partition.volumes[i].centroid = data.volumes()[i].centroid;
+    }
+
+    // Vertices
+    partition.vertices = std::move(data.vertices());
+    partition.exact_vertices = std::move(data.exact_vertices());
+
+    // Faces
+    partition.face_neighbors.resize(data.face_to_volumes().size());
+    for (std::size_t j = 0; j < data.face_to_volumes().size(); j++) {
+      const auto& p = data.face_to_volumes()[j];
+      partition.face_neighbors[j] = std::make_pair(Index(idx, p.first), Index(idx, p.second));
+    }
+
+    partition.face2vertices.resize(data.face_to_vertices().size());
+    for (std::size_t j = 0; j < data.face_to_vertices().size(); j++) {
+      const auto& f = data.face_to_vertices()[j];
+      partition.face2vertices[j].resize(f.size());
+      for (std::size_t k = 0; k < f.size(); k++)
+        partition.face2vertices[j][k] = std::make_pair(idx, f[k]);
+    }
+
+    partition.face2sp = std::move(data.face_to_support_plane());
+    partition.face_part_of_input_polygon = std::move(data.face_is_part_of_input_polygon());
+
+    // Support planes
+    partition.sp_exact_planes.resize(data.number_of_support_planes());
+    partition.sp_input_polygon.resize(data.number_of_support_planes());
+    for (std::size_t i = 0; i < data.number_of_support_planes(); i++) {
+      partition.sp_exact_planes[i] = data.support_plane(i).exact_plane();
+      partition.sp_input_polygon[i] = data.support_plane(i).data().actual_input_polygon;
+    }
+
+    partition.input2sp = data.input_polygon_map();
+
+    // Release the intermediate results of the Finalizer that are not needed anymore.
+    std::vector<std::pair<int, int> >().swap(data.face_to_volumes());
+    std::vector<std::vector<std::size_t> >().swap(data.face_to_vertices());
+    std::map<typename Data_structure::PFace, std::size_t>().swap(data.face_to_index());
+    std::map<typename Data_structure::PFace, std::pair<int, int> >().swap(data.pface_neighbors());
+    data.vertices().clear();
+    data.vertices().shrink_to_fit();
+    data.exact_vertices().clear();
+    data.exact_vertices().shrink_to_fit();
+    data.face_to_support_plane().clear();
+    data.face_to_support_plane().shrink_to_fit();
+    data.face_is_part_of_input_polygon().clear();
+    data.face_is_part_of_input_polygon().shrink_to_fit();
+    data.volumes().clear();
+    data.volumes().shrink_to_fit();
+  }
+
   void collect_faces(std::size_t partition_idx, std::size_t sp_idx, std::vector<Index>& faces, typename Intersection_kernel::Plane_3& plane) {
     Sub_partition& p = m_partition_nodes[partition_idx];
 
-    plane = p.m_data->support_plane(sp_idx).data().exact_plane;
+    plane = p.sp_exact_planes[sp_idx];
 
-    const std::vector<std::size_t>& f2sp = p.m_data->face_to_support_plane();
+    const std::vector<std::size_t>& f2sp = p.face2sp;
 
     for (std::size_t i = 0; i < f2sp.size(); i++)
       if (f2sp[i] == sp_idx)
@@ -1745,13 +1807,13 @@ private:
     if (lcc.template attribute<2>(face_dart) == lcc.null_descriptor) {
       lcc.template set_attribute<2>(face_dart, lcc.template create_attribute<2>());
       // How to handle bbox planes that coincide with input polygons? Check support plane
-      std::size_t sp = m_partition_nodes[face.first].m_data->face_to_support_plane()[face.second];
+      std::size_t sp = m_partition_nodes[face.first].face2sp[face.second];
 
       // There are three different cases:
       // 1. face belongs to a plane from an input polygon
       // 2. face originates from octree splitting (and does not have an input plane)
       // 3. face lies on the bbox
-      int ip = static_cast<int>(m_partition_nodes[face.first].m_data->support_plane(sp).data().actual_input_polygon);
+      int ip = static_cast<int>(m_partition_nodes[face.first].sp_input_polygon[sp]);
 
       if (ip != -1)
         lcc.template info<2>(face_dart).input_polygon_index = static_cast<Face_support>(m_partition_nodes[face.first].input_polygons[ip]);
@@ -1764,12 +1826,12 @@ private:
           lcc.template info<2>(face_dart).input_polygon_index = static_cast<Face_support>(n.second);
       }
 
-      lcc.template info<2>(face_dart).part_of_initial_polygon = m_partition_nodes[face.first].m_data->face_is_part_of_input_polygon()[face.second];
+      lcc.template info<2>(face_dart).part_of_initial_polygon = m_partition_nodes[face.first].face_part_of_input_polygon[face.second];
 
-      lcc.template info<2>(face_dart).plane = m_partition_nodes[face.first].m_data->support_plane(m_partition_nodes[face.first].m_data->face_to_support_plane()[face.second]).exact_plane();
+      lcc.template info<2>(face_dart).plane = m_partition_nodes[face.first].sp_exact_planes[sp];
     }
     else {
-      CGAL_assertion(lcc.template info<2>(face_dart).part_of_initial_polygon == m_partition_nodes[face.first].m_data->face_is_part_of_input_polygon()[face.second]);
+      CGAL_assertion(lcc.template info<2>(face_dart).part_of_initial_polygon == m_partition_nodes[face.first].face_part_of_input_polygon[face.second]);
     }
   }
 
@@ -1839,12 +1901,12 @@ private:
       idx = m_partition_nodes[f.first].face2vertices.size();
       // Add face into vector
       m_partition_nodes[f.first].face2vertices.push_back(std::vector<Index>());
-      m_partition_nodes[f.first].m_data->face_is_part_of_input_polygon().push_back(m_partition_nodes[f.first].m_data->face_is_part_of_input_polygon()[f.second]);
+      m_partition_nodes[f.first].face_part_of_input_polygon.push_back(m_partition_nodes[f.first].face_part_of_input_polygon[f.second]);
       // Add face index into volume
-      m_partition_nodes[f.first].m_data->volumes()[vol_idx].faces.push_back(idx);
+      m_partition_nodes[f.first].volumes[vol_idx].faces.push_back(idx);
       // Copy neighbor from already existing face
       m_partition_nodes[f.first].face_neighbors.push_back(m_partition_nodes[f.first].face_neighbors[f.second]);
-      m_partition_nodes[f.first].m_data->face_to_support_plane().push_back(m_partition_nodes[f.first].m_data->face_to_support_plane()[f.second]);
+      m_partition_nodes[f.first].face2sp.push_back(m_partition_nodes[f.first].face2sp[f.second]);
     }
     else {
       idx = f.second;
@@ -1864,9 +1926,9 @@ private:
       else if (vi.idB2.first != static_cast<std::size_t>(-1))
         vertices[i] = vi.idB2;
       else {
-        std::size_t vidx = m_partition_nodes[f.first].m_data->vertices().size();
-        m_partition_nodes[f.first].m_data->vertices().push_back(from_exact(vi.point_3));
-        m_partition_nodes[f.first].m_data->exact_vertices().push_back(vi.point_3);
+        std::size_t vidx = m_partition_nodes[f.first].vertices.size();
+        m_partition_nodes[f.first].vertices.push_back(from_exact(vi.point_3));
+        m_partition_nodes[f.first].exact_vertices.push_back(vi.point_3);
         vertices[i] = vi.idA2 = std::make_pair(f.first, vidx);
       }
     }
@@ -1948,7 +2010,7 @@ private:
   std::pair<std::size_t, int> find_portal(std::size_t volume, std::size_t former, const Index& vA, const Index& vB, std::size_t& portal) const {
     portal = static_cast<std::size_t>(-7);
     auto vol = m_volumes[volume];
-    std::vector<std::size_t>& faces = m_partition_nodes[vol.first].m_data->volumes()[vol.second].faces;
+    const std::vector<std::size_t>& faces = m_partition_nodes[vol.first].volumes[vol.second].faces;
 
     for (std::size_t f = 0; f < faces.size(); f++) {
       auto n = neighbors(std::make_pair(vol.first, faces[f]));
