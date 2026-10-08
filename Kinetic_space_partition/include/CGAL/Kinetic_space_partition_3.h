@@ -219,8 +219,8 @@ private:
     std::size_t split_plane;
     std::size_t index;
 
-    // Results of the finalization. They are extracted from m_data after the Finalizer has run
-    // and are the only data accessed by make_conformal() and the access functions afterwards.
+    // Results of the finalization. They are extracted from m_data after the Finalizer has run and m_data is released afterwards.
+    // They are the only data accessed by make_conformal() and the access functions.
     struct Volume {
       std::vector<std::size_t> faces; // Indices into face2vertices.
       Point_3 centroid;
@@ -236,19 +236,6 @@ private:
     std::vector<typename Intersection_kernel::Plane_3> sp_exact_planes; // Exact plane for each support plane.
     std::vector<std::size_t> sp_input_polygon; // Index into input_polygons for each support plane, std::size_t(-1) if none.
     std::map<std::size_t, std::size_t> input2sp; // Maps index into input_polygons onto support plane index.
-
-    void clear_finalized_data() {
-      face_neighbors.clear();
-      face2vertices.clear();
-      volumes.clear();
-      vertices.clear();
-      exact_vertices.clear();
-      face2sp.clear();
-      face_part_of_input_polygon.clear();
-      sp_exact_planes.clear();
-      sp_input_polygon.clear();
-      input2sp.clear();
-    }
 
     typename Octree::Node_index node;
   };
@@ -572,6 +559,10 @@ public:
         KSP_3::internal::dump_polygon<GeomTraits>(m_input_polygons[i], std::to_string(i) + "-input_polygon");
     }
 
+    // Discard the results of a previous partition.
+    m_volumes.clear();
+    m_index2volume.clear();
+
     split_octree();
     m_partitions.resize(m_partition_nodes.size());
     std::iota(m_partitions.begin(), m_partitions.end(), 0);
@@ -596,6 +587,9 @@ public:
   /*!
   \brief propagates the kinetic polygons in the initialized partition.
 
+  The internal kinetic data structures are released after the propagation. Hence, `partition()` can only be called once after `initialize()`.
+  To create a partition with a different `k`, `initialize()` has to be called again.
+
   \param k
    maximum number of allowed intersections for each vertex of the polygon before its expansion stops.
 
@@ -608,12 +602,11 @@ public:
 
 #ifndef DOXYGEN_RUNNING
   void partition(std::size_t k, FT& partition_time, FT& finalization_time, FT& conformal_time) {
+    // The kinetic data structures are released after finalizing each partition.
+    // Thus, partition() can only be called once after initialize().
     if (!m_volumes.empty()) {
-      for (Sub_partition& node : m_partition_nodes) {
-        node.m_data->reset_to_initialization();
-        node.clear_finalized_data();
-      }
-      m_volumes.clear();
+      std::cout << "Warning: partition() can only be called once after initialize()!" << std::endl;
+      return;
     }
     Timer timer;
     timer.start();
@@ -627,8 +620,8 @@ public:
       std::cout.precision(20);
 
       // Already initialized?
-      if (partition.m_data->number_of_support_planes() < 6) {
-        std::cout << "Kinetic partition not initialized or empty. Number of support planes: " << partition.m_data->number_of_support_planes() << std::endl;
+      if (!partition.m_data || partition.m_data->number_of_support_planes() < 6) {
+        std::cout << "Kinetic partition not initialized or empty. Number of support planes: " << (partition.m_data ? partition.m_data->number_of_support_planes() : 0) << std::endl;
 
         return;
       }
@@ -1558,21 +1551,15 @@ private:
 
     partition.input2sp = data.input_polygon_map();
 
-    // Release the intermediate results of the Finalizer that are not needed anymore.
-    std::vector<std::pair<int, int> >().swap(data.face_to_volumes());
-    std::vector<std::vector<std::size_t> >().swap(data.face_to_vertices());
-    std::map<typename Data_structure::PFace, std::size_t>().swap(data.face_to_index());
-    std::map<typename Data_structure::PFace, std::pair<int, int> >().swap(data.pface_neighbors());
-    data.vertices().clear();
-    data.vertices().shrink_to_fit();
-    data.exact_vertices().clear();
-    data.exact_vertices().shrink_to_fit();
-    data.face_to_support_plane().clear();
-    data.face_to_support_plane().shrink_to_fit();
-    data.face_is_part_of_input_polygon().clear();
-    data.face_is_part_of_input_polygon().shrink_to_fit();
-    data.volumes().clear();
-    data.volumes().shrink_to_fit();
+    // The kinetic data structure (support planes, intersection graph, kinetic vertices, ...) is not needed anymore.
+    // Releasing it here keeps the peak memory at one kinetic data structure plus the finalized results.
+    CGAL_assertion(partition.m_data.use_count() == 1);
+    partition.m_data.reset();
+
+    // Initializer input is not needed anymore either.
+    std::vector<std::vector<typename Intersection_kernel::Point_3> >().swap(partition.clipped_polygons);
+    std::vector<typename Intersection_kernel::Plane_3>().swap(partition.m_input_planes);
+    std::vector<typename Intersection_kernel::Plane_3>().swap(partition.m_bbox_planes);
   }
 
   void collect_faces(std::size_t partition_idx, std::size_t sp_idx, std::vector<Index>& faces, typename Intersection_kernel::Plane_3& plane) {
