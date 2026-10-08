@@ -567,15 +567,10 @@ public:
     m_partitions.resize(m_partition_nodes.size());
     std::iota(m_partitions.begin(), m_partitions.end(), 0);
 
-    for (std::size_t idx : m_partitions) {
-      Sub_partition& partition = m_partition_nodes[idx];
-      partition.index = idx;
-
-      partition.m_data = std::make_shared<Data_structure>(m_parameters, std::to_string(idx) + "-");
-
-      Initializer initializer(partition.clipped_polygons, partition.m_input_planes, *partition.m_data, m_parameters, m_partitions.size() != 1);
-      initializer.initialize(partition.bbox, partition.input_polygons);
-    }
+    // The kinetic data structure of each partition is created in partition() right before its propagation.
+    // Thus, only one kinetic data structure exists at any time.
+    for (std::size_t idx : m_partitions)
+      m_partition_nodes[idx].index = idx;
 
     // Timing.
     if (m_parameters.verbose) {
@@ -608,20 +603,35 @@ public:
       std::cout << "Warning: partition() can only be called once after initialize()!" << std::endl;
       return;
     }
+    if (m_partitions.empty()) {
+      std::cout << "Warning: initialize() has to be called before partition()!" << std::endl;
+      return;
+    }
+
     Timer timer;
     timer.start();
     partition_time = 0;
     finalization_time = 0;
     conformal_time = 0;
+    FT initialization_time = 0;
 
     for (std::size_t idx : m_partitions) {
       Sub_partition& partition = m_partition_nodes[idx];
       timer.reset();
       std::cout.precision(20);
 
-      // Already initialized?
-      if (!partition.m_data || partition.m_data->number_of_support_planes() < 6) {
-        std::cout << "Kinetic partition not initialized or empty. Number of support planes: " << (partition.m_data ? partition.m_data->number_of_support_planes() : 0) << std::endl;
+      // Initialization of the kinetic data structure. It is released again after finalization in extract_finalized_data().
+      partition.m_data = std::make_shared<Data_structure>(m_parameters, std::to_string(idx) + "-");
+
+      Initializer initializer(partition.clipped_polygons, partition.m_input_planes, *partition.m_data, m_parameters, m_partitions.size() != 1);
+      initializer.initialize(partition.bbox, partition.input_polygons);
+
+      initialization_time += timer.time();
+      timer.reset();
+
+      // Initialization successful?
+      if (partition.m_data->number_of_support_planes() < 6) {
+        std::cout << "Kinetic partition not initialized or empty. Number of support planes: " << partition.m_data->number_of_support_planes() << std::endl;
 
         return;
       }
@@ -665,6 +675,9 @@ public:
 
       extract_finalized_data(partition, idx);
     }
+
+    if (m_parameters.verbose)
+      std::cout << "* initialization time of kinetic data structures: " << initialization_time << std::endl;
 
     for (std::size_t i = 0; i < m_partitions.size(); i++) {
       const Sub_partition& partition = m_partition_nodes[m_partitions[i]];

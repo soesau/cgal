@@ -48,7 +48,7 @@ int main(int argc, char** argv)
   Timer timer;
   timer.start();
 
-  // 'initialize' creates the intersection graph that is used for the partition.
+  // 'initialize' splits the bounding box into an octree. The intersection graphs are created per octree leaf in 'partition'.
   ksp.initialize(CGAL::parameters::bbox_dilation_ratio(1.1).reorient_bbox(false));
 
   // Creating the partition with allowing up to 'k' intersections for each kinetic polygon.
