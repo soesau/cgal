@@ -1,0 +1,16 @@
+diff --git a/STL_Extension/include/CGAL/iterator.h b/STL_Extension/include/CGAL/iterator.h
+index 75d2c54e0..1738c2ba1 100644
+--- a/STL_Extension/include/CGAL/iterator.h
++++ b/STL_Extension/include/CGAL/iterator.h
+@@ -61,6 +61,11 @@ public:
+   {
+     return it;
+   }
++  // compare the base iterators directly: the default of stl_interfaces for
++  // random access iterators is `(a - b) == 0`, which is O(n) for Index_iterator
++  // when the container has garbage
++  friend bool operator==(const Prevent_deref& a, const Prevent_deref& b) { return a.it == b.it; }
++  friend bool operator!=(const Prevent_deref& a, const Prevent_deref& b) { return !(a.it == b.it); }
+ private:
+   friend class boost::stl_interfaces::access;
+   It& base_reference() { return it; }

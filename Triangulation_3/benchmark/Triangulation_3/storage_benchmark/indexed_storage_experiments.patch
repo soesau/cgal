@@ -1,0 +1,369 @@
+diff --git a/TDS_3/include/CGAL/TDS_3/Indexed_storage.h b/TDS_3/include/CGAL/TDS_3/Indexed_storage.h
+index 298ac7715..c005ac97f 100644
+--- a/TDS_3/include/CGAL/TDS_3/Indexed_storage.h
++++ b/TDS_3/include/CGAL/TDS_3/Indexed_storage.h
+@@ -952,8 +952,15 @@ namespace CGAL {
+     bool garbage_ = false;
+     Property_map<Index_type, Storage_type, Concurrency_tag> storage_ =
+         add_property_map<Storage_type>(prefix + std::string(":storage"), Storage_type()).first;
+-    Property_map<Index_type, bool, Concurrency_tag> removed_ =
+-        add_property_map<bool>(prefix + std::string(":removed"), false).first;
++#if defined(CGAL_EXP_REMOVED_CHAR) && defined(CGAL_EXP_NO_CHAR_ALIAS)
++    enum class Removed_flag : unsigned char {};
++#elif defined(CGAL_EXP_REMOVED_CHAR)
++    using Removed_flag = unsigned char;
++#else
++    using Removed_flag = bool;
++#endif
++    Property_map<Index_type, Removed_flag, Concurrency_tag> removed_ =
++        add_property_map<Removed_flag>(prefix + std::string(":removed"), Removed_flag(false)).first;
+ 
+ 
+     Indexed_container() = default;
+@@ -964,7 +971,7 @@ namespace CGAL {
+     Indexed_container& operator=(const Indexed_container& _rhs)
+     {
+       properties_ = _rhs.properties_;
+-      removed_ = properties_.template get<bool>(prefix + std::string(":removed")).value();
++      removed_ = properties_.template get<Removed_flag>(prefix + std::string(":removed")).value();
+       nb_of_removed_elements_ = _rhs.nb_of_removed_elements_;
+       freelist_ = _rhs.freelist_;
+       garbage_ = _rhs.garbage_;
+@@ -1073,13 +1080,15 @@ namespace CGAL {
+       if(recycle_ && (freelist_ != Index_type::invalid_index)){
+         freelist_ = free_list_next_function_(storage_[idx]);
+         --local_number_of_removed_elements();
+-        removed_[idx] = false;
++        removed_[idx] = Removed_flag(false);
+         const auto ec = EraseCounterStrategy<Element_type>::erase_counter(&elt);
++#ifndef CGAL_EXP_NO_RESET
+         if constexpr(internal::TDS_3::use_experimental_properties) {
+           properties_.reset(idx);
+         } else {
+           properties_.reset(idx.id());
+         }
++#endif
+         EraseCounterStrategy<Element_type>::restore_erase_counter(&elt, ec);
+ #if CGAL_DEBUG_INDEXED_CONTAINER
+         ss << idx << " (recycled from freelist)\n";
+@@ -1091,14 +1100,14 @@ namespace CGAL {
+           auto pos = static_cast<size_type>(properties_.grow_by(increment));
+           for(auto i = pos + 1, end = pos + increment; i < end; ++i) {
+             free_list_next_function_(storage_[Index_type{i}]) = i + 1;
+-            removed_[Index_type{i}] = true;
++            removed_[Index_type{i}] = Removed_flag(true);
+           }
+           free_list_next_function_(storage_[Index_type{pos + increment - 1}]) = Index_type::invalid_index;
+           local_number_of_removed_elements() += (increment - 1);
+           freelist_ = pos + 1;
+           size_of_blocks += CGAL_INCREMENT_COMPACT_CONTAINER_BLOCK_SIZE;
+           idx = Index_type{pos};
+-          removed_[idx] = false;
++          removed_[idx] = Removed_flag(false);
+         } else {
+           // sequential case
+           if constexpr(internal::TDS_3::use_experimental_properties) {
+@@ -1122,13 +1131,17 @@ namespace CGAL {
+     void remove(Index_type idx, Container* container)
+     {
+       size_type& freelist_ = free_list();
++#ifdef CGAL_EXP_NO_POPBACK
++      if constexpr(false){
++#else
+       if constexpr(! internal::TDS_3::use_experimental_properties && ! is_parallel){
++#endif
+         if(idx.idx() == properties_.size()-1){
+           properties_.pop_back();
+           return;
+         }
+       }
+-      removed_[idx] = true; ++local_number_of_removed_elements(); garbage_ = true;
++      removed_[idx] = Removed_flag(true); ++local_number_of_removed_elements(); garbage_ = true;
+       free_list_next_function_(storage_[idx]) = freelist_;
+       freelist_ = idx.id();
+       Element_type elt(container, idx);
+@@ -1136,7 +1149,7 @@ namespace CGAL {
+     }
+ 
+     bool is_valid_index(Index_type idx) const {
+-      return idx.id() < size() && !removed_[idx];
++      return idx.id() < size() && !static_cast<bool>(removed_[idx]);
+     }
+ 
+     bool has_garbage() const {
+@@ -1247,9 +1260,28 @@ namespace CGAL {
+     using Edge = Triple<Cell_handle, int, int>;
+ 
+     class Cell_data {
++#ifdef CGAL_EXP_NO_CHAR_ALIAS
++      // an enum with underlying type unsigned char is not a character type:
++      // writing it does not alias the pointers of the property arrays
++      enum class State : unsigned char {};
++      State conflict_state_;
++      struct Proxy {
++        State& s;
++        Proxy& operator=(int v) { s = State(v); return *this; }
++        operator int() const { return int(s); }
++      };
++      Proxy cs() { return Proxy{conflict_state_}; }
++      int cs() const { return int(conflict_state_); }
++#  define conflict_state cs()
++#else
+       unsigned char conflict_state;
++#endif
+     public:
++#ifdef CGAL_EXP_NO_CHAR_ALIAS
++      Cell_data() : conflict_state_(State(0)) {}
++#else
+       Cell_data() : conflict_state(0) {}
++#endif
+ 
+       void clear()            { conflict_state = 0; }
+       void mark_in_conflict() { conflict_state = 1; }
+@@ -1261,6 +1293,9 @@ namespace CGAL {
+       bool is_on_boundary() const { return conflict_state == 2; }
+       bool processed() const { return conflict_state == 1; }
+     };
++#ifdef CGAL_EXP_NO_CHAR_ALIAS
++#  undef conflict_state
++#endif
+ 
+     using TDS_data = Cell_data;
+ 
+@@ -1283,6 +1318,33 @@ namespace CGAL {
+     using Cell_container = Indexed_container<Cell_index, Cell, Cell_storage, Self, Concurrency_tag,
+         &cell_free_list_next_function, 'c'>;
+ 
++#ifdef CGAL_EXP_RAW_PTR
++    // raw views on the property arrays, the base pointers are cached in the TDS
++    template <typename I, typename T>
++    struct Raw_view {
++      T* p;
++      T& operator[](const I& i) const { return p[i.id()]; }
++    };
++    Raw_view<Cell_index, Cell_storage> cell_storage() const { return {raw_cs_}; }
++    Raw_view<Vertex_index, Vertex_storage> vertex_storage() const { return {raw_vs_}; }
++    Raw_view<Cell_index, Cell_data> cell_tds_data_pmap() const { return {raw_cd_}; }
++
++    template <typename Pmap>
++    static auto raw_base(const Pmap& pm, std::size_t n) {
++      using T = typename Pmap::value_type;
++      return n == 0 ? static_cast<T*>(nullptr) : const_cast<T*>(&pm[typename Pmap::key_type(0u)]);
++    }
++    void refresh_raw_pointers() {
++      raw_cs_ = raw_base(cell_container().storage_, num_cells());
++      raw_vs_ = raw_base(vertex_container().storage_, num_vertices());
++      raw_cd_ = raw_base(cell_data_, num_cells());
++      raw_vp_ = raw_base(vertex_point_pmap_, num_vertices());
++    }
++    Cell_storage* raw_cs_ = nullptr;
++    Vertex_storage* raw_vs_ = nullptr;
++    Cell_data* raw_cd_ = nullptr;
++    Point* raw_vp_ = nullptr;
++#else
+     Cell_storage_property_map& cell_storage() { return cell_container().storage_; }
+     const Cell_storage_property_map& cell_storage() const { return cell_container().storage_; }
+ 
+@@ -1291,6 +1353,8 @@ namespace CGAL {
+ 
+     auto cell_tds_data_pmap() { return cell_data_; }
+     auto cell_tds_data_pmap() const { return cell_data_; }
++    void refresh_raw_pointers() {}
++#endif
+ 
+     size_type num_vertices() const { return static_cast<size_type>(vertex_container().size()); }
+     size_type num_cells() const { return static_cast<size_type>(cell_container().size()); }
+@@ -1400,34 +1464,43 @@ namespace CGAL {
+       return {handle(ci), i};
+     }
+ 
++    Vertex_index create_vertex_index()
++    {
++      auto vi = vertex_container().create(this);
++      refresh_raw_pointers();
++      return vi;
++    }
++
+     Vertex_handle create_vertex()
+     {
+-      return Vertex_handle{this, vertex_container().create(this)};
++      return Vertex_handle{this, create_vertex_index()};
+     }
+ 
+     Vertex_index create_vertex_descriptor()
+     {
+-      return vertex_container().create(this);
++      return create_vertex_index();
+     }
+ 
+-    Vertex_index create_vertex_index()
++    Cell_index create_cell_index()
+     {
+-      return vertex_container().create(this);
++      auto ci = cell_container().create(this);
++      refresh_raw_pointers();
++#ifdef CGAL_EXP_NO_RESET
++      // the generic reset of all properties is skipped: only the conflict
++      // flag must be cleared, as cells may be deleted while marked in conflict
++      cell_tds_data_pmap()[ci] = Cell_data();
++#endif
++      return ci;
+     }
+ 
+     Cell_handle create_cell()
+     {
+-      return Cell_handle{this, cell_container().create(this)};
++      return Cell_handle{this, create_cell_index()};
+     }
+ 
+     Cell_index create_cell(const Cell_index&)
+     {
+-      return cell_container().create(this);
+-    }
+-
+-    Cell_index create_cell_index()
+-    {
+-      return cell_container().create(this);
++      return create_cell_index();
+     }
+ 
+     Vertex_handle create_vertex(const Vertex& v)
+@@ -1534,6 +1607,7 @@ namespace CGAL {
+     {
+       vertex_container().reserve(n_vertices);
+       cell_container().reserve(n_cells);
++      refresh_raw_pointers();
+     }
+ 
+     void clear()
+@@ -1547,6 +1621,7 @@ namespace CGAL {
+       vertex_container().clear();
+       cell_container().clear();
+       dimension_ = -2;
++      refresh_raw_pointers();
+     }
+ 
+     void remove_all_property_maps()
+@@ -1663,8 +1738,30 @@ namespace CGAL {
+     : vertex_container_(), cell_container_(), dimension_(-2)
+     {
+       vertex_point_pmap_ = vertex_container().template add_property_map<Point>("v:point").first;
++      refresh_raw_pointers();
+     }
+ 
++#ifdef CGAL_EXP_RAW_PTR
++    Indexed_storage(const Indexed_storage& o)
++    : vertex_container_(o.vertex_container_), cell_container_(o.cell_container_), dimension_(o.dimension_)
++    {
++      vertex_point_pmap_ = this->template property_map<Vertex_index, Point>("v:point").value();
++      cell_data_ = this->template property_map<Cell_index, Cell_data>("c:data").value();
++      refresh_raw_pointers();
++    }
++    Indexed_storage& operator=(const Indexed_storage& o)
++    {
++      vertex_container_ = o.vertex_container_;
++      cell_container_ = o.cell_container_;
++      dimension_ = o.dimension_;
++      vertex_point_pmap_ = this->template property_map<Vertex_index, Point>("v:point").value();
++      cell_data_ = this->template property_map<Cell_index, Cell_data>("c:data").value();
++      refresh_raw_pointers();
++      return *this;
++    }
++    Indexed_storage(Indexed_storage&&) = delete;
++    Indexed_storage& operator=(Indexed_storage&&) = delete;
++#else
+     // copy constructor
+     Indexed_storage(const Indexed_storage&) = default;
+ 
+@@ -1677,6 +1774,7 @@ namespace CGAL {
+ 
+     Indexed_storage& operator=(const Indexed_storage&) = default;
+     Indexed_storage& operator=(Indexed_storage&& is) = default;
++#endif
+ 
+     void swap(Indexed_storage& other)
+     {
+@@ -1701,8 +1799,8 @@ namespace CGAL {
+       CGAL_assertion(i0 >= 0 && i0 <= dimension());
+       CGAL_assertion(i1 >= 0 && i1 <= dimension());
+       CGAL_assertion(c0 != c1);
+-      cell_container().storage_[c0.idx()].ineighbors[i0] = c1.idx();
+-      cell_container().storage_[c1.idx()].ineighbors[i1] = c0.idx();
++      cell_storage()[c0.idx()].ineighbors[i0] = c1.idx();
++      cell_storage()[c1.idx()].ineighbors[i1] = c0.idx();
+     }
+ 
+     void set_adjacency(const Cell_index& ci0, int i0,
+@@ -1711,8 +1809,8 @@ namespace CGAL {
+       CGAL_assertion(i0 >= 0 && i0 <= dimension());
+       CGAL_assertion(i1 >= 0 && i1 <= dimension());
+       CGAL_assertion(ci0 != ci1);
+-      cell_container().storage_[ci0].ineighbors[i0] = ci1;
+-      cell_container().storage_[ci1].ineighbors[i1] = ci0;
++      cell_storage()[ci0].ineighbors[i0] = ci1;
++      cell_storage()[ci1].ineighbors[i1] = ci0;
+     }
+ 
+     void set_vertex_cell(const Vertex_index& vi, const Cell_index& ci)
+@@ -1742,12 +1840,12 @@ namespace CGAL {
+     /// \sa `collect_garbage()`
+     bool is_removed(const Vertex_index& v) const
+     {
+-      return vertex_container().removed_[v];
++      return static_cast<bool>(vertex_container().removed_[v]);
+     }
+ 
+     bool is_removed(const Cell_index& c) const
+     {
+-      return cell_container().removed_[c];
++      return static_cast<bool>(cell_container().removed_[c]);
+     }
+     //------------------------------------------------------ iterator types
+     using Vertex_iterator = Index_iterator<Vertex_handle, Self>;
+@@ -1861,6 +1959,7 @@ namespace CGAL {
+       // Vertex_handle vh = tds().copy_tds(src, vert, setv, setc);
+       vertex_point_pmap_ = this->property_map<Vertex_index, Point>("v:point").value();
+       cell_data_ = this->property_map<Cell_index, Cell_data>("c:data").value();
++      refresh_raw_pointers();
+       return  Vertex_handle{this, 0};
+     }
+ 
+@@ -1894,22 +1993,38 @@ namespace CGAL {
+   public:
+     const Point& point(const Vertex_handle& vh) const
+     {
++#ifdef CGAL_EXP_RAW_PTR
++      return raw_vp_[vh.idx().id()];
++#else
+       return vertex_point_pmap_[vh.idx()];
++#endif
+     }
+ 
+     const Point& point(const Vertex_index& vi) const
+     {
++#ifdef CGAL_EXP_RAW_PTR
++      return raw_vp_[vi.id()];
++#else
+       return vertex_point_pmap_[vi];
++#endif
+     }
+ 
+     Point& point(const Vertex_handle& vh)
+     {
++#ifdef CGAL_EXP_RAW_PTR
++      return raw_vp_[vh.idx().id()];
++#else
+       return vertex_point_pmap_[vh.idx()];
++#endif
+     }
+ 
+     Point& point(const Vertex_index& vi)
+     {
++#ifdef CGAL_EXP_RAW_PTR
++      return raw_vp_[vi.id()];
++#else
+       return vertex_point_pmap_[vi];
++#endif
+     }
+ 
+     protected:
