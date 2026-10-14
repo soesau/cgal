@@ -16,6 +16,8 @@
 #include <CGAL/assertions.h>
 #include <cstddef>
 #include <iterator>
+#include <type_traits>
+#include <utility>
 #include <string>
 
 namespace CGAL {
@@ -171,14 +173,29 @@ struct Get_time_stamper<T,false>{
 template <class T>
 struct Time_stamper_impl : public Get_time_stamper<T>::type {};
 
+namespace internal {
+  // index based handles (e.g. `Index_handle` of `Indexed_storage`) have a member `idx()`
+  template <typename Handle, typename = void>
+  struct Is_index_handle : std::false_type {};
+  template <typename Handle>
+  struct Is_index_handle<Handle, std::void_t<decltype(std::declval<const Handle&>().idx())>>
+    : std::true_type {};
+} // namespace internal
+
 struct Hash_handles_with_or_without_timestamps
 {
   template <typename Handle>
   std::size_t operator()(const Handle h) const
   {
-    typedef typename std::iterator_traits<Handle>::value_type Type;
+    if constexpr(internal::Is_index_handle<Handle>::value) {
+      // The index is deterministic already. `operator*` of such a handle
+      // returns a proxy by value, so `&*h` cannot be used.
+      return hash_value(h);
+    } else {
+      typedef typename std::iterator_traits<Handle>::value_type Type;
 
-    return Get_time_stamper<Type>::type::hash_value(&*h);
+      return Get_time_stamper<Type>::type::hash_value(&*h);
+    }
   }
 };
 

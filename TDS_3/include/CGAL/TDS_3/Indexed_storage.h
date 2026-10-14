@@ -1220,6 +1220,20 @@ namespace CGAL {
       return Vertex_handle{const_cast<Self*>(this), index};
     }
 
+    // identity, so that generic code can call `handle()` on descriptors and handles
+    // (as `descriptor()` accepts both)
+    Cell_handle handle(const Cell_handle& ch) const
+    {
+      CGAL_assertion(ch.container() == nullptr || ch.container() == this); // default constructed handle: no cell
+      return ch;
+    }
+
+    Vertex_handle handle(const Vertex_handle& vh) const
+    {
+      CGAL_assertion(vh.container() == nullptr || vh.container() == this); // default constructed handle: no vertex
+      return vh;
+    }
+
     cell_descriptor descriptor(const cell_descriptor& c) const
     {
       return c;
@@ -1232,13 +1246,13 @@ namespace CGAL {
 
     cell_descriptor descriptor(Cell_handle ch) const
     {
-      CGAL_assertion(ch.container() == this);
+      CGAL_assertion(ch.container() == nullptr || ch.container() == this); // default constructed handle: no cell
       return ch.idx();
     }
 
     vertex_descriptor descriptor(Vertex_handle vh) const
     {
-      CGAL_assertion(vh.container() == this);
+      CGAL_assertion(vh.container() == nullptr || vh.container() == this); // default constructed handle: no vertex
       return vh.idx();
     }
 
