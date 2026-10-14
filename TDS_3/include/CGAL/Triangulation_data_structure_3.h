@@ -642,15 +642,15 @@ public:
   //internally used for create_star_3 (faster than a tuple)
   struct iAdjacency_info{
     int v1;
-    Cell_handle v2;
+    cell_descriptor v2;
     int v3;
-    Cell_handle v4;
+    cell_descriptor v4;
     int v5;
     int v6;
     iAdjacency_info(){}
-    iAdjacency_info(int a1,Cell_handle a2,int a3,Cell_handle a4,int a5 ,int a6):
+    iAdjacency_info(int a1,cell_descriptor a2,int a3,cell_descriptor a4,int a5 ,int a6):
       v1(a1),v2(a2),v3(a3),v4(a4),v5(a5),v6(a6) {}
-    void update_variables(int& a1,Cell_handle& a2,int& a3,Cell_handle& a4,int& a5 ,int& a6)
+    void update_variables(int& a1,cell_descriptor& a2,int& a3,cell_descriptor& a4,int& a5 ,int& a6)
     {
       a1=v1;
       a2=v2;
@@ -840,15 +840,44 @@ private:
                    int i2, int j2, int next2,
                    Vertex_handle v3);
 
-  #ifdef CGAL_TDS_USE_RECURSIVE_CREATE_STAR_3
-  Cell_handle create_star_3(Vertex_handle v, Cell_handle c,
-                            int li, int prev_ind2 = -1);
-  #else
-  Cell_handle recursive_create_star_3(Vertex_handle v, Cell_handle c, int li, int prev_ind2,int depth);
-  Cell_handle non_recursive_create_star_3(Vertex_handle v, Cell_handle c, int li, int prev_ind2);
+  // index of the vertex `v` / of the neighbor `n` in the cell `c`
+  int vertex_index(cell_descriptor c, vertex_descriptor v) const
+  {
+    for(int i = 0; i < 3; ++i)
+      if(vertex(c, i) == v) return i;
+    CGAL_assertion(vertex(c, 3) == v);
+    return 3;
+  }
 
-  Cell_handle create_star_3(Vertex_handle v, Cell_handle c,
-                            int li, int prev_ind2 = -1)
+  int neighbor_index(cell_descriptor c, cell_descriptor n) const
+  {
+    for(int i = 0; i < 3; ++i)
+      if(neighbor(c, i) == n) return i;
+    CGAL_assertion(neighbor(c, 3) == n);
+    return 3;
+  }
+
+  // the cell storing the new adjacencies of `create_star_3()`
+  cell_descriptor create_star_cell(vertex_descriptor v, cell_descriptor c, int li)
+  {
+    CGAL_precondition( tds_data(c).is_in_conflict() );
+    CGAL_precondition( ! tds_data(neighbor(c, li)).is_in_conflict() );
+    cell_descriptor cnew = create_cell(vertex(c, 0), vertex(c, 1), vertex(c, 2), vertex(c, 3));
+    set_vertex(cnew, li, v);
+    cell_descriptor c_li = neighbor(c, li);
+    set_adjacency(cnew, li, c_li, neighbor_index(c_li, c));
+    return cnew;
+  }
+
+  #ifdef CGAL_TDS_USE_RECURSIVE_CREATE_STAR_3
+  cell_descriptor create_star_3(vertex_descriptor v, cell_descriptor c,
+                                int li, int prev_ind2 = -1);
+  #else
+  cell_descriptor recursive_create_star_3(vertex_descriptor v, cell_descriptor c, int li, int prev_ind2,int depth);
+  cell_descriptor non_recursive_create_star_3(vertex_descriptor v, cell_descriptor c, int li, int prev_ind2);
+
+  cell_descriptor create_star_3(vertex_descriptor v, cell_descriptor c,
+                                int li, int prev_ind2 = -1)
   {
     return recursive_create_star_3(v,c,li,prev_ind2,0);
   }
@@ -872,7 +901,7 @@ public:
 
       Cell_handle cnew;
       if (dimension() == 3)
-          cnew = create_star_3(newv, begin, i);
+          cnew = handle(create_star_3(descriptor(newv), descriptor(begin), i));
       else
           cnew = create_star_2(newv, begin, i);
 
@@ -1360,26 +1389,26 @@ private:
   {
     CGAL_precondition(dimension() == 3);
 
-    Cell_handle d = v->cell();
-    cells.push_back(d);
-    d->tds_data().mark_in_conflict();
-    int head=0;
-    int tail=1;
+    const vertex_descriptor vd = descriptor(v);
+    const cell_descriptor d = descriptor(v->cell());
+    const std::size_t first = cells.size();
+    cells.push_back(handle(d));
+    tds_data(d).mark_in_conflict();
+    std::size_t head = first;
     do {
-      Cell_handle c = cells[head];
+      const cell_descriptor c = descriptor(cells[head]);
 
       for (int i=0; i<4; ++i) {
-        if (c->vertex(i) == v)
+        if (vertex(c, i) == vd)
           continue;
-        Cell_handle next = c->neighbor(i);
-        if (! next->tds_data().is_clear())
+        const cell_descriptor next = neighbor(c, i);
+        if (! tds_data(next).is_clear())
           continue;
-        cells.push_back(next);
-        ++tail;
-        next->tds_data().mark_in_conflict();
+        cells.push_back(handle(next));
+        tds_data(next).mark_in_conflict();
       }
       ++head;
-    } while(head != tail);
+    } while(head != cells.size());
   }
 
   template <class OutputIterator>
@@ -2118,49 +2147,40 @@ private:
 
 #ifdef CGAL_TDS_USE_RECURSIVE_CREATE_STAR_3
 template <class Vb, class Cb, class Ct, class St>
-typename Triangulation_data_structure_3<Vb,Cb,Ct,St>::Cell_handle
+typename Triangulation_data_structure_3<Vb,Cb,Ct,St>::cell_descriptor
 Triangulation_data_structure_3<Vb,Cb,Ct,St>::
-create_star_3(Vertex_handle v, Cell_handle c, int li, int prev_ind2)
+create_star_3(vertex_descriptor v, cell_descriptor c, int li, int prev_ind2)
 {
     CGAL_precondition( dimension() == 3);
-    CGAL_precondition( c->tds_data().is_in_conflict() );
-    CGAL_precondition( ! c->neighbor(li)->tds_data().is_in_conflict() );
-
-    Cell_handle cnew = create_cell(c->vertex(0),
-                                   c->vertex(1),
-                                   c->vertex(2),
-                                   c->vertex(3));
-    cnew->set_vertex(li, v);
-    Cell_handle c_li = c->neighbor(li);
-    set_adjacency(cnew, li, c_li, c_li->index(c));
+    cell_descriptor cnew = create_star_cell(v, c, li);
 
     // Look for the other neighbors of cnew.
     for (int ii=0; ii<4; ++ii) {
-      if (ii == prev_ind2 || cnew->neighbor(ii) != Cell_handle())
+      if (ii == prev_ind2 || neighbor(cnew, ii) != cell_descriptor())
           continue;
-      set_vertex_cell(cnew->vertex(ii), cnew);
+      set_vertex_cell(vertex(cnew, ii), cnew);
 
       // Indices of the vertices of cnew such that ii,vj1,vj2,li positive.
-      Vertex_handle vj1 = c->vertex(next_around_edge(ii, li));
-      Vertex_handle vj2 = c->vertex(next_around_edge(li, ii));
-      Cell_handle cur = c;
+      vertex_descriptor vj1 = vertex(c, next_around_edge(ii, li));
+      vertex_descriptor vj2 = vertex(c, next_around_edge(li, ii));
+      cell_descriptor cur = c;
       int zz = ii;
-      Cell_handle n = cur->neighbor(zz);
+      cell_descriptor n = neighbor(cur, zz);
       // turn around the oriented edge vj1 vj2
-      while ( n->tds_data().is_in_conflict() ) {
+      while ( tds_data(n).is_in_conflict() ) {
         CGAL_assertion( n != c );
         cur = n;
-        zz = next_around_edge(n->index(vj1), n->index(vj2));
-        n = cur->neighbor(zz);
+        zz = next_around_edge(vertex_index(n, vj1), vertex_index(n, vj2));
+        n = neighbor(cur, zz);
       }
       // Now n is outside region, cur is inside.
-      n->tds_data().clear(); // Reset the flag for boundary cells.
+      tds_data(n).clear(); // Reset the flag for boundary cells.
 
-      int jj1 = n->index(vj1);
-      int jj2 = n->index(vj2);
-      Vertex_handle vvv = n->vertex(next_around_edge(jj1, jj2));
-      Cell_handle nnn = n->neighbor(next_around_edge(jj2, jj1));
-      int zzz = nnn->index(vvv);
+      int jj1 = vertex_index(n, vj1);
+      int jj2 = vertex_index(n, vj2);
+      vertex_descriptor vvv = vertex(n, next_around_edge(jj1, jj2));
+      cell_descriptor nnn = neighbor(n, next_around_edge(jj2, jj1));
+      int zzz = vertex_index(nnn, vvv);
       if (nnn == cur) {
         // Neighbor relation is reciprocal, i.e.
         // the cell we are looking for is not yet created.
@@ -2174,51 +2194,42 @@ create_star_3(Vertex_handle v, Cell_handle c, int li, int prev_ind2)
 }
 #else
 template <class Vb, class Cb, class Ct, class St>
-typename Triangulation_data_structure_3<Vb,Cb,Ct,St>::Cell_handle
+typename Triangulation_data_structure_3<Vb,Cb,Ct,St>::cell_descriptor
 Triangulation_data_structure_3<Vb,Cb,Ct,St>::
-recursive_create_star_3(Vertex_handle v, Cell_handle c, int li,
+recursive_create_star_3(vertex_descriptor v, cell_descriptor c, int li,
                         int prev_ind2, int depth)
 {
     if ( depth == 100 ) return non_recursive_create_star_3(v,c,li,prev_ind2);
     CGAL_precondition( dimension() == 3);
-    CGAL_precondition( c->tds_data().is_in_conflict() );
-    CGAL_precondition( ! c->neighbor(li)->tds_data().is_in_conflict() );
-
-    Cell_handle cnew = create_cell(c->vertex(0),
-                                   c->vertex(1),
-                                   c->vertex(2),
-                                   c->vertex(3));
-    cnew->set_vertex(li, v);
-    Cell_handle c_li = c->neighbor(li);
-    set_adjacency(cnew, li, c_li, c_li->index(c));
+    cell_descriptor cnew = create_star_cell(v, c, li);
 
     // Look for the other neighbors of cnew.
     for (int ii=0; ii<4; ++ii) {
-      if (ii == prev_ind2 || cnew->neighbor(ii) != Cell_handle())
+      if (ii == prev_ind2 || neighbor(cnew, ii) != cell_descriptor())
           continue;
-      set_vertex_cell(cnew->vertex(ii), cnew);
+      set_vertex_cell(vertex(cnew, ii), cnew);
 
       // Indices of the vertices of cnew such that ii,vj1,vj2,li positive.
-      Vertex_handle vj1 = c->vertex(next_around_edge(ii, li));
-      Vertex_handle vj2 = c->vertex(next_around_edge(li, ii));
-      Cell_handle cur = c;
+      vertex_descriptor vj1 = vertex(c, next_around_edge(ii, li));
+      vertex_descriptor vj2 = vertex(c, next_around_edge(li, ii));
+      cell_descriptor cur = c;
       int zz = ii;
-      Cell_handle n = cur->neighbor(zz);
+      cell_descriptor n = neighbor(cur, zz);
       // turn around the oriented edge vj1 vj2
-      while ( n->tds_data().is_in_conflict() ) {
+      while ( tds_data(n).is_in_conflict() ) {
         CGAL_assertion( n != c );
         cur = n;
-        zz = next_around_edge(n->index(vj1), n->index(vj2));
-        n = cur->neighbor(zz);
+        zz = next_around_edge(vertex_index(n, vj1), vertex_index(n, vj2));
+        n = neighbor(cur, zz);
       }
       // Now n is outside region, cur is inside.
-      n->tds_data().clear(); // Reset the flag for boundary cells.
+      tds_data(n).clear(); // Reset the flag for boundary cells.
 
-      int jj1 = n->index(vj1);
-      int jj2 = n->index(vj2);
-      Vertex_handle vvv = n->vertex(next_around_edge(jj1, jj2));
-      Cell_handle nnn = n->neighbor(next_around_edge(jj2, jj1));
-      int zzz = nnn->index(vvv);
+      int jj1 = vertex_index(n, vj1);
+      int jj2 = vertex_index(n, vj2);
+      vertex_descriptor vvv = vertex(n, next_around_edge(jj1, jj2));
+      cell_descriptor nnn = neighbor(n, next_around_edge(jj2, jj1));
+      int zzz = vertex_index(nnn, vvv);
       if (nnn == cur) {
         // Neighbor relation is reciprocal, i.e.
         // the cell we are looking for is not yet created.
@@ -2234,21 +2245,12 @@ recursive_create_star_3(Vertex_handle v, Cell_handle c, int li,
 //We use the class iAdjacency_info instead of a tuple because
 //at the moment we made the change it was faster like this.
 template <class Vb, class Cb, class Ct, class St>
-typename Triangulation_data_structure_3<Vb,Cb,Ct,St>::Cell_handle
+typename Triangulation_data_structure_3<Vb,Cb,Ct,St>::cell_descriptor
 Triangulation_data_structure_3<Vb,Cb,Ct,St>::
-non_recursive_create_star_3(Vertex_handle v, Cell_handle c, int li, int prev_ind2)
+non_recursive_create_star_3(vertex_descriptor v, cell_descriptor c, int li, int prev_ind2)
 {
     CGAL_precondition( dimension() == 3);
-    CGAL_precondition( c->tds_data().is_in_conflict() );
-    CGAL_precondition( ! c->neighbor(li)->tds_data().is_in_conflict() );
-
-    Cell_handle cnew = create_cell(c->vertex(0),
-                                   c->vertex(1),
-                                   c->vertex(2),
-                                   c->vertex(3));
-    cnew->set_vertex(li, v);
-    Cell_handle c_li = c->neighbor(li);
-    set_adjacency(cnew, li, c_li, c_li->index(c));
+    cell_descriptor cnew = create_star_cell(v, c, li);
 
     std::stack<iAdjacency_info> adjacency_info_stack;
 
@@ -2256,50 +2258,44 @@ non_recursive_create_star_3(Vertex_handle v, Cell_handle c, int li, int prev_ind
     do
     {
       // Look for the other neighbors of cnew.
-      if ( ! (ii == prev_ind2 || cnew->neighbor(ii) != Cell_handle()) ){
-        set_vertex_cell(cnew->vertex(ii), cnew);
+      if ( ! (ii == prev_ind2 || neighbor(cnew, ii) != cell_descriptor()) ){
+        set_vertex_cell(vertex(cnew, ii), cnew);
 
         // Indices of the vertices of cnew such that ii,vj1,vj2,li positive.
-        Vertex_handle vj1 = c->vertex(next_around_edge(ii, li));
-        Vertex_handle vj2 = c->vertex(next_around_edge(li, ii));
-        Cell_handle cur = c;
+        vertex_descriptor vj1 = vertex(c, next_around_edge(ii, li));
+        vertex_descriptor vj2 = vertex(c, next_around_edge(li, ii));
+        cell_descriptor cur = c;
         int zz = ii;
-        Cell_handle n = cur->neighbor(zz);
+        cell_descriptor n = neighbor(cur, zz);
         // turn around the oriented edge vj1 vj2
-        while ( n->tds_data().is_in_conflict() ) {
+        while ( tds_data(n).is_in_conflict() ) {
           CGAL_assertion( n != c );
           cur = n;
-          zz = next_around_edge(n->index(vj1), n->index(vj2));
-          n = cur->neighbor(zz);
+          zz = next_around_edge(vertex_index(n, vj1), vertex_index(n, vj2));
+          n = neighbor(cur, zz);
         }
         // Now n is outside region, cur is inside.
-        n->tds_data().clear(); // Reset the flag for boundary cells.
+        tds_data(n).clear(); // Reset the flag for boundary cells.
 
-        int jj1 = n->index(vj1);
-        int jj2 = n->index(vj2);
-        Vertex_handle vvv = n->vertex(next_around_edge(jj1, jj2));
-        Cell_handle nnn = n->neighbor(next_around_edge(jj2, jj1));
-        int zzz = nnn->index(vvv);
+        int jj1 = vertex_index(n, vj1);
+        int jj2 = vertex_index(n, vj2);
+        vertex_descriptor vvv = vertex(n, next_around_edge(jj1, jj2));
+        cell_descriptor nnn = neighbor(n, next_around_edge(jj2, jj1));
+        int zzz = vertex_index(nnn, vvv);
         if (nnn == cur) {
           // Neighbor relation is reciprocal, i.e.
           // the cell we are looking for is not yet created.
           //re-run the loop
           adjacency_info_stack.push( iAdjacency_info(zzz,cnew,ii,c,li,prev_ind2) );
           c=nnn;  li=zz; prev_ind2=zzz; ii=0;
-          //copy-pasted from beginning to avoid if ii==0
-          CGAL_precondition( c->tds_data().is_in_conflict() );
-          CGAL_precondition( ! c->neighbor(li)->tds_data().is_in_conflict() );
-          cnew = create_cell(c->vertex(0),c->vertex(1),c->vertex(2),c->vertex(3));
-          cnew->set_vertex(li, v);
-          c_li = c->neighbor(li);
-          set_adjacency(cnew, li, c_li, c_li->index(c));
+          cnew = create_star_cell(v, c, li);
           continue;
         }
         set_adjacency(nnn, zzz, cnew, ii);
       }
       while (++ii==4){
         if ( adjacency_info_stack.empty() ) return cnew;
-        Cell_handle nnn=cnew;
+        cell_descriptor nnn=cnew;
         int zzz;
         adjacency_info_stack.top().update_variables(zzz,cnew,ii,c,li,prev_ind2);
         adjacency_info_stack.pop();

@@ -1312,14 +1312,102 @@ namespace CGAL {
     using Cell_container = Indexed_container<Cell_index, Cell, Cell_storage, Self, Concurrency_tag,
         &cell_free_list_next_function, 'c'>;
 
-    Cell_storage_property_map& cell_storage() { return cell_container().storage_; }
-    const Cell_storage_property_map& cell_storage() const { return cell_container().storage_; }
+    static constexpr bool is_parallel = std::is_convertible_v<Concurrency_tag, Parallel_tag>;
 
-    Vertex_storage_property_map& vertex_storage() { return vertex_container().storage_; }
-    const Vertex_storage_property_map& vertex_storage() const { return vertex_container().storage_; }
+  private:
+    // Access to the built-in arrays, which are used in the inner loops of the
+    // algorithms. With `Sequential_tag`, their base addresses are cached (see
+    // `update_cell_array_addresses()`), which saves the two indirections of a
+    // property map (map -> property array -> data). With `Parallel_tag`, the
+    // arrays are `tbb::concurrent_vector`s, which are not contiguous and grow
+    // concurrently: the property maps are used.
+    template <typename Key, typename T>
+    struct Array_ref
+    {
+      T* base;
+      T& operator[](const Key& k) const { return base[k.id()]; }
+    };
 
-    auto cell_tds_data_pmap() { return cell_data_; }
-    auto cell_tds_data_pmap() const { return cell_data_; }
+    template <typename Key, typename Pmap>
+    static auto* array_address(const Pmap& pmap, size_type size)
+    {
+      return size == 0 ? nullptr : &pmap[Key(0u)];
+    }
+
+    struct Array_addresses
+    {
+      Cell_storage* cells = nullptr;
+      Cell_data* cell_data = nullptr;
+      Vertex_storage* vertices = nullptr;
+      Point* points = nullptr;
+    };
+    Array_addresses array_addresses_;
+
+    // must be called after each operation that may reallocate the cell arrays
+    void update_cell_array_addresses()
+    {
+      if constexpr(!is_parallel) {
+        array_addresses_.cells = array_address<Cell_index>(cell_container().storage_, num_cells());
+        array_addresses_.cell_data = array_address<Cell_index>(cell_data_, num_cells());
+      }
+    }
+
+    // must be called after each operation that may reallocate the vertex arrays
+    void update_vertex_array_addresses()
+    {
+      if constexpr(!is_parallel) {
+        array_addresses_.vertices = array_address<Vertex_index>(vertex_container().storage_, num_vertices());
+        array_addresses_.points = array_address<Vertex_index>(vertex_point_pmap_, num_vertices());
+      }
+    }
+
+    // binds the built-in property maps (after a copy or a move of the containers)
+    void bind_builtin_property_maps()
+    {
+      vertex_point_pmap_ = this->template property_map<Vertex_index, Point>("v:point").value();
+      cell_data_ = this->template property_map<Cell_index, Cell_data>("c:data").value();
+      update_vertex_array_addresses();
+      update_cell_array_addresses();
+    }
+
+  public:
+    // The following accessors return objects that are only valid until the next
+    // creation of an element: use them for direct access, `cell_storage()[c]`.
+    auto cell_storage() const
+    {
+      if constexpr(is_parallel) {
+        return cell_container().storage_;
+      } else {
+        return Array_ref<Cell_index, Cell_storage>{array_addresses_.cells};
+      }
+    }
+
+    auto vertex_storage() const
+    {
+      if constexpr(is_parallel) {
+        return vertex_container().storage_;
+      } else {
+        return Array_ref<Vertex_index, Vertex_storage>{array_addresses_.vertices};
+      }
+    }
+
+    auto cell_tds_data_pmap() const
+    {
+      if constexpr(is_parallel) {
+        return cell_data_;
+      } else {
+        return Array_ref<Cell_index, Cell_data>{array_addresses_.cell_data};
+      }
+    }
+
+    auto point_pmap() const
+    {
+      if constexpr(is_parallel) {
+        return vertex_point_pmap_;
+      } else {
+        return Array_ref<Vertex_index, Point>{array_addresses_.points};
+      }
+    }
 
     size_type num_vertices() const { return static_cast<size_type>(vertex_container().size()); }
     size_type num_cells() const { return static_cast<size_type>(cell_container().size()); }
@@ -1442,14 +1530,16 @@ namespace CGAL {
     Vertex_index create_vertex_index()
     {
       Vertex_index vi = vertex_container().create(this);
-      vertex_point_pmap_[vi] = Point(); // built-in property map, see the constructor
+      update_vertex_array_addresses();
+      point_pmap()[vi] = Point(); // built-in property map, see the constructor
       return vi;
     }
 
     Cell_index create_cell_index()
     {
       Cell_index ci = cell_container().create(this);
-      cell_data_[ci] = Cell_data(); // built-in property map, see the constructor
+      update_cell_array_addresses();
+      cell_tds_data_pmap()[ci] = Cell_data(); // built-in property map, see the constructor
       return ci;
     }
 
@@ -1567,6 +1657,8 @@ namespace CGAL {
     {
       vertex_container().reserve(n_vertices);
       cell_container().reserve(n_cells);
+      update_vertex_array_addresses();
+      update_cell_array_addresses();
     }
 
     void clear()
@@ -1580,12 +1672,15 @@ namespace CGAL {
       vertex_container().clear();
       cell_container().clear();
       dimension_ = -2;
+      update_vertex_array_addresses();
+      update_cell_array_addresses();
     }
 
+    // removes the property maps added by the user, the built-in ones are kept
     void remove_all_property_maps()
     {
-      remove_property_maps<Vertex_index>(2);
-      remove_property_maps<Cell_index>(3);
+      remove_property_maps<Vertex_index>(vertex_container().number_of_builtin_properties_);
+      remove_property_maps<Cell_index>(cell_container().number_of_builtin_properties_);
     }
 
     size_type number_of_removed_vertices() const
@@ -1700,20 +1795,49 @@ namespace CGAL {
       // `create_cell_index()`: the containers do not need to reset them
       vertex_container().set_builtin_properties();
       cell_container().set_builtin_properties();
+      update_vertex_array_addresses();
+      update_cell_array_addresses();
     }
 
-    // copy constructor
-    Indexed_storage(const Indexed_storage&) = default;
+    // The built-in property maps and the cached array addresses refer to the
+    // arrays of the containers: they are bound again after a copy or a move.
+    Indexed_storage(const Indexed_storage& other)
+    : vertex_container_(other.vertex_container_),
+      cell_container_(other.cell_container_),
+      dimension_(other.dimension_)
+    {
+      bind_builtin_property_maps();
+    }
 
-    // move constructor
-    Indexed_storage(Indexed_storage&& rhs)
-    : vertex_container_(std::move(rhs.vertex_container_)),
-      cell_container_(std::move(rhs.cell_container_)),
-      dimension_(std::exchange(rhs.dimension_, -2))
-    {}
+    Indexed_storage(Indexed_storage&& other)
+    : vertex_container_(std::move(other.vertex_container_)),
+      cell_container_(std::move(other.cell_container_)),
+      dimension_(std::exchange(other.dimension_, -2))
+    {
+      bind_builtin_property_maps();
+    }
 
-    Indexed_storage& operator=(const Indexed_storage&) = default;
-    Indexed_storage& operator=(Indexed_storage&& is) = default;
+    Indexed_storage& operator=(const Indexed_storage& other)
+    {
+      if(this != &other) {
+        vertex_container_ = other.vertex_container_;
+        cell_container_ = other.cell_container_;
+        dimension_ = other.dimension_;
+        bind_builtin_property_maps();
+      }
+      return *this;
+    }
+
+    Indexed_storage& operator=(Indexed_storage&& other)
+    {
+      if(this != &other) {
+        vertex_container_ = std::move(other.vertex_container_);
+        cell_container_ = std::move(other.cell_container_);
+        dimension_ = std::exchange(other.dimension_, -2);
+        bind_builtin_property_maps();
+      }
+      return *this;
+    }
 
     void swap(Indexed_storage& other)
     {
@@ -1738,8 +1862,8 @@ namespace CGAL {
       CGAL_assertion(i0 >= 0 && i0 <= dimension());
       CGAL_assertion(i1 >= 0 && i1 <= dimension());
       CGAL_assertion(c0 != c1);
-      cell_container().storage_[c0.idx()].ineighbors[i0] = c1.idx();
-      cell_container().storage_[c1.idx()].ineighbors[i1] = c0.idx();
+      cell_storage()[c0.idx()].ineighbors[i0] = c1.idx();
+      cell_storage()[c1.idx()].ineighbors[i1] = c0.idx();
     }
 
     void set_adjacency(const Cell_index& ci0, int i0,
@@ -1748,8 +1872,8 @@ namespace CGAL {
       CGAL_assertion(i0 >= 0 && i0 <= dimension());
       CGAL_assertion(i1 >= 0 && i1 <= dimension());
       CGAL_assertion(ci0 != ci1);
-      cell_container().storage_[ci0].ineighbors[i0] = ci1;
-      cell_container().storage_[ci1].ineighbors[i1] = ci0;
+      cell_storage()[ci0].ineighbors[i0] = ci1;
+      cell_storage()[ci1].ineighbors[i1] = ci0;
     }
 
     void set_vertex_cell(const Vertex_index& vi, const Cell_index& ci)
@@ -1896,8 +2020,7 @@ namespace CGAL {
       // internal::TDS_3::Default_index_vertex_converter<typename TDS_src::Vertex,Vertex> setv;
       // internal::TDS_3::Default_index_cell_converter<typename TDS_src::Cell,Cell>  setc;
       // Vertex_handle vh = tds().copy_tds(src, vert, setv, setc);
-      vertex_point_pmap_ = this->property_map<Vertex_index, Point>("v:point").value();
-      cell_data_ = this->property_map<Cell_index, Cell_data>("c:data").value();
+      bind_builtin_property_maps();
       return  Vertex_handle{this, 0};
     }
 
@@ -1931,22 +2054,22 @@ namespace CGAL {
   public:
     const Point& point(const Vertex_handle& vh) const
     {
-      return vertex_point_pmap_[vh.idx()];
+      return point_pmap()[vh.idx()];
     }
 
     const Point& point(const Vertex_index& vi) const
     {
-      return vertex_point_pmap_[vi];
+      return point_pmap()[vi];
     }
 
     Point& point(const Vertex_handle& vh)
     {
-      return vertex_point_pmap_[vh.idx()];
+      return point_pmap()[vh.idx()];
     }
 
     Point& point(const Vertex_index& vi)
     {
-      return vertex_point_pmap_[vi];
+      return point_pmap()[vi];
     }
 
     protected:
