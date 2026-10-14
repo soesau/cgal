@@ -287,7 +287,7 @@ public:
     bool locked = true;
     if(m_lock_ds)
     {
-      locked = m_lock_ds->try_lock(derived().point(vh), lock_radius);
+      locked = m_lock_ds->try_lock(derived().point_for_locking(vh), lock_radius);
     }
     return locked;
   }
@@ -299,7 +299,7 @@ public:
     // Lock the element area on the grid
     for(int iVertex = 0 ; success && iVertex < 4 ; ++iVertex)
     {
-      success = m_lock_ds->try_lock(derived().point(cell_handle, iVertex), lock_radius);
+      success = m_lock_ds->try_lock(derived().point_for_locking(cell_handle, iVertex), lock_radius);
     }
     return success;
   }
@@ -937,6 +937,30 @@ public:
     CGAL_precondition(dimension() >= 0);
     CGAL_precondition(! is_infinite(v));
     v->point() = p;
+  }
+
+  // Points used as keys of the lock data structure of parallel triangulations.
+  // Contrary to `point()`, these are also defined for the infinite vertex (its
+  // point is meaningless, but it is a valid key: all infinite cells then share
+  // one lock, as before the introduction of descriptors).
+  template <typename VertexHandleOrDescriptor>
+  const Point& point_for_locking(const VertexHandleOrDescriptor& v) const
+  {
+    if constexpr (Tds::is_index_based) {
+      return tds().point(tds().descriptor(v));
+    } else {
+      return v->point();
+    }
+  }
+
+  template <typename CellHandleOrDescriptor>
+  const Point& point_for_locking(const CellHandleOrDescriptor& c, int i) const
+  {
+    if constexpr (Tds::is_index_based) {
+      return tds().point(tds().vertex(tds().descriptor(c), i));
+    } else {
+      return c->vertex(i)->point();
+    }
   }
 
   const Point& point(Vertex_handle v) const
