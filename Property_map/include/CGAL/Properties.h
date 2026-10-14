@@ -599,7 +599,14 @@ public:
     // reset element to its default property values
     void reset(size_t idx)
     {
-        for (std::size_t i=0; i<parrays_.size(); ++i)
+        reset(idx, 0);
+    }
+
+    // reset element to its default values in the property arrays `first`, `first+1`, ...
+    // (the owner of the container reinitializes the first ones itself)
+    void reset(size_t idx, size_t first)
+    {
+        for (std::size_t i=first; i<parrays_.size(); ++i)
             parrays_[i]->reset(idx);
     }
 

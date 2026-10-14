@@ -335,14 +335,6 @@ static void run_dataset(const std::string& ds, const std::vector<Point_3>& pts) 
   }
 
   // 8. remove 10% of the vertices (random order) --------------------------------
-  // Delaunay_triangulation_3::remove() does not compile with Index_tag on this
-  // branch (Hash_handles_with_or_without_timestamps takes &*h of a proxy
-  // handle, see Triangulation_3::adjacent_vertices()). Define
-  // TDS_BENCH_REMOVE=1 to force the test once that is fixed.
-#ifndef TDS_BENCH_REMOVE
-#  define TDS_BENCH_REMOVE (!(TDS_STORAGE_BRANCH && TDS_STORAGE_INDEX))
-#endif
-#if TDS_BENCH_REMOVE
   {
     const std::size_t nr = (std::min<std::size_t>)(pts.size() / 10, 20000);
     // pick the vertices by their point, so that the choice is storage independent
@@ -366,9 +358,6 @@ static void run_dataset(const std::string& ds, const std::vector<Point_3>& pts) 
     DT ref(pts.begin() + nr, pts.end());
     check(ds, "remove.same_as_fresh", signature(ref) == sig ? 1 : 0);
   }
-#else
-  std::cout << "# remove test skipped (does not compile for " << config_name << ")" << std::endl;
-#endif
 }
 
 int main(int argc, char** argv) {

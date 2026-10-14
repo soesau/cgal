@@ -954,6 +954,16 @@ namespace CGAL {
         add_property_map<Storage_type>(prefix + std::string(":storage"), Storage_type()).first;
     Property_map<Index_type, bool, Concurrency_tag> removed_ =
         add_property_map<bool>(prefix + std::string(":removed"), false).first;
+    // number of property maps (the first ones) that are initialized by `create()`
+    // or by the owner of the container when an element is recycled
+    size_type number_of_builtin_properties_ = 2; // `storage_` and `removed_`
+
+    // declares all current property maps as built-in: the owner initializes them
+    // itself when an element is created
+    void set_builtin_properties()
+    {
+      number_of_builtin_properties_ = static_cast<size_type>(properties_.n_properties());
+    }
 
 
     Indexed_container() = default;
@@ -970,6 +980,7 @@ namespace CGAL {
       garbage_ = _rhs.garbage_;
       storage_ = properties_.template get<Storage_type>(prefix + std::string(":storage")).value();
       anonymous_property_nb = _rhs.anonymous_property_nb;
+      number_of_builtin_properties_ = _rhs.number_of_builtin_properties_;
       return *this;
     }
 
@@ -980,7 +991,8 @@ namespace CGAL {
       freelist_(std::exchange(rhs.freelist_,(std::numeric_limits<size_type>::max)())),
       garbage_(std::exchange(rhs.garbage_, false)),
       storage_(std::move(rhs.storage_)),
-      anonymous_property_nb(std::exchange(rhs.anonymous_property_nb, 0))
+      anonymous_property_nb(std::exchange(rhs.anonymous_property_nb, 0)),
+      number_of_builtin_properties_(rhs.number_of_builtin_properties_)
     {
       std::cout << "Move constructor of Indexed_container\n";
     }
@@ -1078,7 +1090,10 @@ namespace CGAL {
         if constexpr(internal::TDS_3::use_experimental_properties) {
           properties_.reset(idx);
         } else {
-          properties_.reset(idx.id());
+          // The built-in property maps are initialized by their owners (see
+          // `set_builtin_properties()`), the generic reset is only needed for the others.
+          storage_[idx] = Storage_type();
+          properties_.reset(idx.id(), number_of_builtin_properties_);
         }
         EraseCounterStrategy<Element_type>::restore_erase_counter(&elt, ec);
 #if CGAL_DEBUG_INDEXED_CONTAINER
@@ -1416,32 +1431,36 @@ namespace CGAL {
 
     Vertex_handle create_vertex()
     {
-      return Vertex_handle{this, vertex_container().create(this)};
+      return Vertex_handle{this, create_vertex_index()};
     }
 
     Vertex_index create_vertex_descriptor()
     {
-      return vertex_container().create(this);
+      return create_vertex_index();
     }
 
     Vertex_index create_vertex_index()
     {
-      return vertex_container().create(this);
-    }
-
-    Cell_handle create_cell()
-    {
-      return Cell_handle{this, cell_container().create(this)};
-    }
-
-    Cell_index create_cell(const Cell_index&)
-    {
-      return cell_container().create(this);
+      Vertex_index vi = vertex_container().create(this);
+      vertex_point_pmap_[vi] = Point(); // built-in property map, see the constructor
+      return vi;
     }
 
     Cell_index create_cell_index()
     {
-      return cell_container().create(this);
+      Cell_index ci = cell_container().create(this);
+      cell_data_[ci] = Cell_data(); // built-in property map, see the constructor
+      return ci;
+    }
+
+    Cell_handle create_cell()
+    {
+      return Cell_handle{this, create_cell_index()};
+    }
+
+    Cell_index create_cell(const Cell_index&)
+    {
+      return create_cell_index();
     }
 
     Vertex_handle create_vertex(const Vertex& v)
@@ -1677,6 +1696,10 @@ namespace CGAL {
     : vertex_container_(), cell_container_(), dimension_(-2)
     {
       vertex_point_pmap_ = vertex_container().template add_property_map<Point>("v:point").first;
+      // the points and the cell data are initialized by `create_vertex_index()` and
+      // `create_cell_index()`: the containers do not need to reset them
+      vertex_container().set_builtin_properties();
+      cell_container().set_builtin_properties();
     }
 
     // copy constructor

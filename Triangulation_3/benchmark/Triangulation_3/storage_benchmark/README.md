@@ -54,7 +54,14 @@ python3 compare_storage_benchmark.py --patch prevent_deref_equality.patch \
     --variant "INDEX_EXP=-DCGAL_EXP_NO_RESET -DCGAL_EXP_REMOVED_CHAR -DCGAL_EXP_RAW_PTR"
 ```
 
-`--variant NAME=FLAGS` adds an `INDEX` build with extra compile flags.
+`--variant NAME=FLAGS` adds an `INDEX` build with extra compile flags, and
+`--variant NAME@TREE=FLAGS` builds it from another CGAL tree (e.g. a worktree with a
+prototype), so that both versions run interleaved in the same session:
+
+```sh
+git worktree add ../prototype HEAD    # then change the code in ../prototype
+python3 compare_storage_benchmark.py --variant "INDEX_NEW@../prototype="
+```
 
 ## What is measured
 
@@ -84,16 +91,14 @@ vertex point hashes), the same hash for the one-by-one insertion, the cells foun
 `locate`, the number of incident cells, the copy, and the triangulation after removal
 (also compared to a fresh triangulation of the remaining points).
 
-## Known issues of the branch found with this benchmark (2026-10-12)
+## Issues of the branch found with this benchmark (fixed since)
 
-1. **Quadratic iteration with `Index_tag`.** `Prevent_deref` (used by `all_cell_handles()`,
-   `finite_cell_handles()`, ...) was rewritten with `boost::stl_interfaces`, whose default
-   `operator==` for random access iterators is `(a - b) == 0`. `Index_iterator::operator-`
-   walks element by element when the container has garbage, which is always the case after
-   Delaunay insertions. Every loop over all cells is therefore O(n^2): it does not finish for
-   100k points. The benchmark checks this first and aborts with an error.
-   `prevent_deref_equality.patch` fixes it.
-2. **`remove()` does not compile with `Index_tag`.** `Triangulation_3::adjacent_vertices()` uses
-   `Hash_handles_with_or_without_timestamps`, which takes `&*h`, but `Index_handle::operator*`
-   returns a proxy by value. The removal test is skipped for `INDEX`
-   (`-DTDS_BENCH_REMOVE=1` forces it once this is fixed).
+1. **Quadratic iteration with `Index_tag`** (fixed in `bf2ef1f92f4`). `Prevent_deref` (used by
+   `all_cell_handles()`, ...) compared iterators with the `boost::stl_interfaces` default
+   `(a - b) == 0`, and `Index_iterator::operator-` walks element by element when the container
+   has garbage. The benchmark still checks this first and aborts with an error.
+2. **`remove()` did not compile with `Index_tag`** (fixed in `2e143d2871c`):
+   `Hash_handles_with_or_without_timestamps` took `&*h` of a proxy handle.
+3. **Parallel insertion asserted on the infinite vertex** (fixed in `c7329646f8a`):
+   `try_lock_cell()`/`try_lock_vertex()` used `point()`, whose precondition excludes the
+   infinite vertex.

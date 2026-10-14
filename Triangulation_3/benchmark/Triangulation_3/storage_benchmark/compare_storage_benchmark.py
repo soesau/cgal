@@ -132,19 +132,25 @@ def main():
     ap.add_argument("--patch", action="append", default=[],
                     help="apply this patch to a worktree of HEAD of --tree and benchmark HANDLE/INDEX "
                          "from there (repeatable; uncommitted changes of --tree are not included)")
-    ap.add_argument("--variant", action="append", default=[], metavar="NAME=CXXFLAGS",
-                    help="additional INDEX configuration built with extra compile flags (repeatable)")
+    ap.add_argument("--variant", action="append", default=[], metavar="NAME[@TREE]=CXXFLAGS",
+                    help="additional INDEX configuration built with extra compile flags, optionally "
+                         "from another CGAL tree, e.g. a worktree with a prototype (repeatable)")
     args = ap.parse_args()
 
     tree = args.tree.resolve()
     build_dir = args.build_dir.resolve()
     build_dir.mkdir(parents=True, exist_ok=True)
     configs = [c.strip().upper() for c in args.configs.split(",")]
-    variants = {}
+    variants = {}       # name -> extra flags
+    variant_trees = {}  # name -> tree
     for v in args.variant:
         name, _, flags = v.partition("=")
-        variants[name.strip().upper()] = flags
-        configs.append(name.strip().upper())
+        name, _, vtree = name.partition("@")
+        name = name.strip().upper()
+        variants[name] = flags
+        if vtree:
+            variant_trees[name] = pathlib.Path(vtree).resolve()
+        configs.append(name)
     branch_src = ensure_patched(tree, args.patch, build_dir) if args.patch else tree
 
     datasets = args.dataset
@@ -160,7 +166,7 @@ def main():
             base = args.baseline_dir.resolve() if args.baseline_dir else ensure_baseline(tree, args.baseline_ref, build_dir)
             src, index = base, False
         elif c in ("HANDLE", "INDEX") or c in variants:
-            src, index = branch_src, c != "HANDLE"
+            src, index = variant_trees.get(c, branch_src), c != "HANDLE"
         else:
             sys.exit(f"unknown configuration {c}")
         bdir = build_dir / f"build-{c}"
@@ -209,7 +215,8 @@ def main():
     if args.patch:
         lines.append(f"patches applied to HEAD of the tree: {', '.join(pathlib.Path(p).name for p in args.patch)}\n")
     for v, f in variants.items():
-        lines.append(f"variant {v}: INDEX with `{f}`\n")
+        where = f" from `{variant_trees[v]}`" if v in variant_trees else ""
+        lines.append(f"variant {v}: INDEX{where} with `{f or '(no extra flags)'}`\n")
     lines.append(f"tree `{tree}`, baseline `{args.baseline_dir or args.baseline_ref}`, "
                  f"rounds {args.rounds} x repeat {args.repeat}, CXX flags `{args.cxx_flags or '(default Release)'}`\n")
     for c in configs:

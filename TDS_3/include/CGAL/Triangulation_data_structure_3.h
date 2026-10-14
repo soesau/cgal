@@ -1272,37 +1272,53 @@ public:
   // around a vertex
 private:
 
+  // Depth-first search of the cells incident to `v`, starting at `d`. The cells
+  // are output as descriptors and are left marked: the caller must clear their
+  // `tds_data()`.
+  template <class IncidentCellDescriptorIterator, class IncidentFacetIterator>
+  std::pair<IncidentCellDescriptorIterator, IncidentFacetIterator>
+  incident_cell_descriptors_3(vertex_descriptor v, cell_descriptor d,
+                              std::pair<IncidentCellDescriptorIterator,
+                                        IncidentFacetIterator> it) const
+  {
+        CGAL_precondition(dimension() == 3);
+
+        std::stack<cell_descriptor, boost::container::small_vector<cell_descriptor, 128>> cell_stack;
+        cell_stack.push(d);
+        tds_data(d).mark_in_conflict();
+        *it.first++ = d;
+
+        do {
+                cell_descriptor c = cell_stack.top();
+                cell_stack.pop();
+
+                for (int i=0; i<4; ++i) {
+                        if (vertex(c, i) == v)
+                                continue;
+                        cell_descriptor next = neighbor(c, i);
+                        if (c < next)
+                                *it.second++ = Facet(handle(c), i); // Incident facet.
+                        if (! tds_data(next).is_clear())
+                                continue;
+                        cell_stack.push(next);
+                        tds_data(next).mark_in_conflict();
+                        *it.first++ = next;
+                }
+        } while(!cell_stack.empty());
+
+        return it;
+  }
+
   template <class IncidentCellIterator, class IncidentFacetIterator>
   std::pair<IncidentCellIterator, IncidentFacetIterator>
   incident_cells_3(Vertex_handle v, Cell_handle d,
                                  std::pair<IncidentCellIterator,
                                  IncidentFacetIterator> it) const
   {
-        CGAL_precondition(dimension() == 3);
-
-        std::stack<Cell_handle, boost::container::small_vector<Cell_handle, 128>> cell_stack;
-        cell_stack.push(d);
-        d->tds_data().mark_in_conflict();
-        *it.first++ = d;
-
-        do {
-                Cell_handle c = cell_stack.top();
-                cell_stack.pop();
-
-                for (int i=0; i<4; ++i) {
-                        if (c->vertex(i) == v)
-                                continue;
-                        Cell_handle next = c->neighbor(i);
-                        if (c < next)
-                                *it.second++ = Facet(c, i); // Incident facet.
-                        if (! next->tds_data().is_clear())
-                                continue;
-                        cell_stack.push(next);
-                        next->tds_data().mark_in_conflict();
-                        *it.first++ = next;
-                }
-        } while(!cell_stack.empty());
-
+        auto cells = boost::make_function_output_iterator(
+            [&](const cell_descriptor& c) { *it.first++ = handle(c); });
+        it.second = incident_cell_descriptors_3(descriptor(v), descriptor(d),
+                                                std::make_pair(cells, it.second)).second;
         return it;
   }
 
@@ -1802,16 +1818,23 @@ public:
 
     Visitor visit(v, output, this, f);
 
-    boost::container::small_vector<Cell_handle, 128> tmp_cells;
-    if ( dimension() == 3 )
-    incident_cells_3(v, v->cell(), std::make_pair(std::back_inserter(tmp_cells), visit.facet_it()));
-    else
-    incident_cells_2(v, v->cell(), std::back_inserter(tmp_cells));
-
-    for(auto c : tmp_cells)
-    {
-      c->tds_data().clear();
-      visit(c);
+    if ( dimension() == 3 ) {
+      boost::container::small_vector<cell_descriptor, 128> tmp_cells;
+      incident_cell_descriptors_3(descriptor(v), descriptor(v->cell()),
+                                  std::make_pair(std::back_inserter(tmp_cells), visit.facet_it()));
+      for(auto c : tmp_cells)
+      {
+        tds_data(c).clear();
+        visit(handle(c));
+      }
+    } else {
+      boost::container::small_vector<Cell_handle, 128> tmp_cells;
+      incident_cells_2(v, v->cell(), std::back_inserter(tmp_cells));
+      for(auto c : tmp_cells)
+      {
+        c->tds_data().clear();
+        visit(c);
+      }
     }
 
     return visit.result();
