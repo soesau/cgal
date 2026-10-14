@@ -61,6 +61,11 @@ public:
   {
     return it;
   }
+  // compare the base iterators directly: the default of stl_interfaces for
+  // random access iterators is `(a - b) == 0`, which is O(n) for Index_iterator
+  // when the container has garbage
+  friend bool operator==(const Prevent_deref& a, const Prevent_deref& b) { return a.it == b.it; }
+  friend bool operator!=(const Prevent_deref& a, const Prevent_deref& b) { return !(a.it == b.it); }
 private:
   friend class boost::stl_interfaces::access;
   It& base_reference() { return it; }
