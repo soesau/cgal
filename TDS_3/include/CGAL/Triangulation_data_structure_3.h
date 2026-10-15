@@ -666,9 +666,14 @@ public:
 public:
   Triangulation_data_structure_3() = default; // default constructor
   Triangulation_data_structure_3(Tds&&) = default; // move constructor
-  Triangulation_data_structure_3(const Tds &tds) : Tds_storage(tds) // copy constructor
+  // copy constructor: the indexed storage is copied as a whole (the indices remain
+  // valid), whereas the handles of the other storage must be recreated by `copy_tds()`
+  // (that storage is not copyable)
+  Triangulation_data_structure_3(const Tds &tds)
   {
-    if constexpr (! is_index_based) {
+    if constexpr (is_index_based) {
+      Tds_storage::operator=(tds);
+    } else {
       copy_tds(tds);
     }
   }
