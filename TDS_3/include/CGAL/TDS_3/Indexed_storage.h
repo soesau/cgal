@@ -944,25 +944,33 @@ namespace CGAL {
     std::conditional_t<internal::TDS_3::use_experimental_properties,
                        Properties::Experimental::Property_container<Index_type>,
                        Properties::Property_container<Self, Index_type, Concurrency_tag>> properties_;
+    // number of property maps (the first ones) that are initialized by `create()`
+    // or by the owner of the container when an element is recycled
+    size_type number_of_builtin_properties_ = 2; // `storage_` and `removed_`
+    // `true` if there are property maps that are not built-in, which `create()` resets
+    bool has_non_builtin_properties_ = false;
+
+    // must be called after each addition or removal of property maps
+    void update_non_builtin_properties()
+    {
+      has_non_builtin_properties_ = (properties_.n_properties() > number_of_builtin_properties_);
+    }
+
     size_type size_of_blocks = CGAL_INCREMENT_COMPACT_CONTAINER_BLOCK_SIZE;
     size_type nb_of_removed_elements_ = 0;
     free_list_type freelist_{Index_type::invalid_index};
     size_type anonymous_property_nb = 0;
-    static constexpr bool recycle_ = true;
     bool garbage_ = false;
     Property_map<Index_type, Storage_type, Concurrency_tag> storage_ =
         add_property_map<Storage_type>(prefix + std::string(":storage"), Storage_type()).first;
     Property_map<Index_type, bool, Concurrency_tag> removed_ =
         add_property_map<bool>(prefix + std::string(":removed"), false).first;
-    // number of property maps (the first ones) that are initialized by `create()`
-    // or by the owner of the container when an element is recycled
-    size_type number_of_builtin_properties_ = 2; // `storage_` and `removed_`
-
     // declares all current property maps as built-in: the owner initializes them
     // itself when an element is created
     void set_builtin_properties()
     {
       number_of_builtin_properties_ = static_cast<size_type>(properties_.n_properties());
+      update_non_builtin_properties();
     }
 
 
@@ -981,6 +989,7 @@ namespace CGAL {
       storage_ = properties_.template get<Storage_type>(prefix + std::string(":storage")).value();
       anonymous_property_nb = _rhs.anonymous_property_nb;
       number_of_builtin_properties_ = _rhs.number_of_builtin_properties_;
+      has_non_builtin_properties_ = _rhs.has_non_builtin_properties_;
       return *this;
     }
 
@@ -998,7 +1007,8 @@ namespace CGAL {
       garbage_(std::exchange(rhs.garbage_, false)),
       storage_(std::move(rhs.storage_)),
       removed_(std::move(rhs.removed_)),
-      number_of_builtin_properties_(rhs.number_of_builtin_properties_)
+      number_of_builtin_properties_(rhs.number_of_builtin_properties_),
+      has_non_builtin_properties_(std::exchange(rhs.has_non_builtin_properties_, false))
     {
       rhs.freelist_ = free_list_type{Index_type::invalid_index};
     }
@@ -1016,6 +1026,7 @@ namespace CGAL {
         storage_ = std::move(rhs.storage_);
         removed_ = std::move(rhs.removed_);
         number_of_builtin_properties_ = rhs.number_of_builtin_properties_;
+        has_non_builtin_properties_ = std::exchange(rhs.has_non_builtin_properties_, false);
       }
       return *this;
     }
@@ -1043,7 +1054,9 @@ namespace CGAL {
         auto [array_ref_wrapper, created] = properties_.get_or_add_property(name, t);
         return { array_ref_wrapper.get(), created };
       } else {
-        return properties_.template add<T>(name, t);
+        auto result = properties_.template add<T>(name, t);
+        update_non_builtin_properties();
+        return result;
       }
     }
 
@@ -1096,65 +1109,71 @@ namespace CGAL {
       }
     }
 
+    // returns `true` if the next call to `create()` grows the property arrays
+    // (which may reallocate them)
+    bool is_full()
+    {
+      return free_list() == Index_type::invalid_index;
+    }
+
     Index_type create(Container* container)
     {
-#if CGAL_DEBUG_INDEXED_CONTAINER
-      std::stringstream ss;
-      ss << "Creating new #";
-#endif
       size_type& freelist_ = free_list();
+      if(freelist_ == Index_type::invalid_index)
+        grow();
+      // pop the first element of the free list
       Index_type idx{freelist_};
+      freelist_ = free_list_next_function_(storage_[idx]);
+      --local_number_of_removed_elements();
+      removed_[idx] = false;
       Element_type elt(container, idx);
-      if(recycle_ && (freelist_ != Index_type::invalid_index)){
-        freelist_ = free_list_next_function_(storage_[idx]);
-        --local_number_of_removed_elements();
-        removed_[idx] = false;
-        const auto ec = EraseCounterStrategy<Element_type>::erase_counter(&elt);
-        if constexpr(internal::TDS_3::use_experimental_properties) {
-          properties_.reset(idx);
-        } else {
-          // The built-in property maps are initialized by their owners (see
-          // `set_builtin_properties()`), the generic reset is only needed for the others.
-          storage_[idx] = Storage_type();
-          properties_.reset(idx.id(), number_of_builtin_properties_);
-        }
-        EraseCounterStrategy<Element_type>::restore_erase_counter(&elt, ec);
-#if CGAL_DEBUG_INDEXED_CONTAINER
-        ss << idx << " (recycled from freelist)\n";
-#endif
+      const auto ec = EraseCounterStrategy<Element_type>::erase_counter(&elt);
+      if constexpr(internal::TDS_3::use_experimental_properties) {
+        properties_.reset(idx);
       } else {
-        if constexpr(internal::TDS_3::use_experimental_properties) {
-          idx = Index_type{static_cast<size_type>(properties_.emplace())};
-        } else {
-          // As `Compact_container`, grow by blocks of increasing size: one call of
-          // `grow_by()` for all property arrays, and the other new elements go to the
-          // free list. Creating one element at a time would call `push_back()` of
-          // each property array for each element.
-          std::conditional_t<is_parallel, std::unique_lock<std::mutex>, Null_tag> lock{mutex_};
-          auto increment = size_of_blocks;
-          auto pos = static_cast<size_type>(properties_.grow_by(increment));
-          for(auto i = pos + 1, end = pos + increment; i < end; ++i) {
-            free_list_next_function_(storage_[Index_type{i}]) = i + 1;
-            removed_[Index_type{i}] = true;
-          }
-          free_list_next_function_(storage_[Index_type{pos + increment - 1}]) = Index_type::invalid_index;
-          local_number_of_removed_elements() += (increment - 1);
-          freelist_ = pos + 1;
-          garbage_ = true;
-          size_of_blocks += CGAL_INCREMENT_COMPACT_CONTAINER_BLOCK_SIZE;
-          idx = Index_type{pos};
-          removed_[idx] = false;
-        }
-        elt = Element_type(container, idx);
-#if CGAL_DEBUG_INDEXED_CONTAINER
-        ss << idx << " (new)\n";
-#endif
+        // The built-in property maps are initialized by their owners (see
+        // `set_builtin_properties()`), the generic reset is only needed for the others.
+        storage_[idx] = Storage_type();
+        if(has_non_builtin_properties_)
+          properties_.reset(idx.id(), number_of_builtin_properties_);
       }
-      Time_stamper::restore_timestamp(&elt, elt.idx().id());
+      EraseCounterStrategy<Element_type>::restore_erase_counter(&elt, ec);
+      Time_stamper::restore_timestamp(&elt, idx.id());
 #if CGAL_DEBUG_INDEXED_CONTAINER
-      std::cerr << ss.str();
+      std::cerr << "Creating new #" << idx << '\n';
 #endif
       return idx;
+    }
+
+    // adds new elements to the free list.
+    // Kept apart from `create()`, which is in the inner loops of the algorithms.
+    void grow()
+    {
+      size_type& freelist_ = free_list();
+      if constexpr(internal::TDS_3::use_experimental_properties) {
+        const auto pos = static_cast<size_type>(properties_.emplace());
+        free_list_next_function_(storage_[Index_type{pos}]) = freelist_;
+        removed_[Index_type{pos}] = true;
+        ++local_number_of_removed_elements();
+        freelist_ = pos;
+      } else {
+        // As `Compact_container`, grow by blocks of increasing size: one call of
+        // `grow_by()` for all property arrays. Creating one element at a time would
+        // call `push_back()` of each property array for each element.
+        std::conditional_t<is_parallel, std::unique_lock<std::mutex>, Null_tag> lock{mutex_};
+        const auto increment = size_of_blocks;
+        const auto pos = static_cast<size_type>(properties_.grow_by(increment));
+        for(auto i = pos, last = pos + increment - 1; i < last; ++i) {
+          free_list_next_function_(storage_[Index_type{i}]) = i + 1;
+          removed_[Index_type{i}] = true;
+        }
+        free_list_next_function_(storage_[Index_type{pos + increment - 1}]) = freelist_;
+        removed_[Index_type{pos + increment - 1}] = true;
+        local_number_of_removed_elements() += increment;
+        freelist_ = pos;
+        size_of_blocks += CGAL_INCREMENT_COMPACT_CONTAINER_BLOCK_SIZE;
+      }
+      garbage_ = true;
     }
 
     void remove(Index_type idx, Container* container)
@@ -1550,10 +1569,13 @@ namespace CGAL {
 
     Vertex_index create_vertex_index()
     {
-      const size_type n = num_vertices();
+      if constexpr(!is_parallel) {
+        if(vertex_container().is_full()) {
+          vertex_container().grow();
+          update_vertex_array_addresses(); // the arrays may have been reallocated
+        }
+      }
       Vertex_index vi = vertex_container().create(this);
-      if(num_vertices() != n) // the arrays grew, and may have been reallocated
-        update_vertex_array_addresses();
       if constexpr(has_points)
         point_pmap()[vi] = Point(); // built-in property map, see the constructor
       return vi;
@@ -1561,10 +1583,13 @@ namespace CGAL {
 
     Cell_index create_cell_index()
     {
-      const size_type n = num_cells();
+      if constexpr(!is_parallel) {
+        if(cell_container().is_full()) {
+          cell_container().grow();
+          update_cell_array_addresses(); // the arrays may have been reallocated
+        }
+      }
       Cell_index ci = cell_container().create(this);
-      if(num_cells() != n) // the arrays grew, and may have been reallocated
-        update_cell_array_addresses();
       cell_tds_data_pmap()[ci] = Cell_data(); // built-in property map, see the constructor
       return ci;
     }
@@ -1781,6 +1806,7 @@ namespace CGAL {
     void remove_property_map(Property_map<I, T>& p)
     {
       container<I>().properties_.template remove<T>(p);
+      container<I>().update_non_builtin_properties();
     }
 
     /// removes all property maps for index type `I` added by a call to `add_property_map<I>()`.
@@ -1789,6 +1815,7 @@ namespace CGAL {
     void remove_property_maps(int nb_of_properties_to_keep)
     {
       container<I>().properties_.resize_property_array(nb_of_properties_to_keep);
+      container<I>().update_non_builtin_properties();
     }
 
     /// @cond CGAL_DOCUMENT_INTERNALS
