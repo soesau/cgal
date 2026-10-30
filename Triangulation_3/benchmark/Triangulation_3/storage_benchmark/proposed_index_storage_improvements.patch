@@ -1,0 +1,236 @@
+diff --git a/Property_map/include/CGAL/Properties.h b/Property_map/include/CGAL/Properties.h
+index 1ddba0978..f123ee12d 100644
+--- a/Property_map/include/CGAL/Properties.h
++++ b/Property_map/include/CGAL/Properties.h
+@@ -599,7 +599,14 @@ public:
+     // reset element to its default property values
+     void reset(size_t idx)
+     {
+-        for (std::size_t i=0; i<parrays_.size(); ++i)
++        reset(idx, 0);
++    }
++
++    // reset element to its default values in the property arrays `first`, `first+1`, ...
++    // (the owner of the container reinitializes the first ones itself)
++    void reset(size_t idx, size_t first)
++    {
++        for (std::size_t i=first; i<parrays_.size(); ++i)
+             parrays_[i]->reset(idx);
+     }
+ 
+diff --git a/TDS_3/include/CGAL/TDS_3/Indexed_storage.h b/TDS_3/include/CGAL/TDS_3/Indexed_storage.h
+index 3496f9c0a..916fee00b 100644
+--- a/TDS_3/include/CGAL/TDS_3/Indexed_storage.h
++++ b/TDS_3/include/CGAL/TDS_3/Indexed_storage.h
+@@ -954,6 +954,16 @@ namespace CGAL {
+         add_property_map<Storage_type>(prefix + std::string(":storage"), Storage_type()).first;
+     Property_map<Index_type, bool, Concurrency_tag> removed_ =
+         add_property_map<bool>(prefix + std::string(":removed"), false).first;
++    // number of property maps (the first ones) that are initialized by `create()`
++    // or by the owner of the container when an element is recycled
++    size_type number_of_builtin_properties_ = 2; // `storage_` and `removed_`
++
++    // declares all current property maps as built-in: the owner initializes them
++    // itself when an element is created
++    void set_builtin_properties()
++    {
++      number_of_builtin_properties_ = static_cast<size_type>(properties_.n_properties());
++    }
+ 
+ 
+     Indexed_container() = default;
+@@ -970,6 +980,7 @@ namespace CGAL {
+       garbage_ = _rhs.garbage_;
+       storage_ = properties_.template get<Storage_type>(prefix + std::string(":storage")).value();
+       anonymous_property_nb = _rhs.anonymous_property_nb;
++      number_of_builtin_properties_ = _rhs.number_of_builtin_properties_;
+       return *this;
+     }
+ 
+@@ -980,7 +991,8 @@ namespace CGAL {
+       freelist_(std::exchange(rhs.freelist_,(std::numeric_limits<size_type>::max)())),
+       garbage_(std::exchange(rhs.garbage_, false)),
+       storage_(std::move(rhs.storage_)),
+-      anonymous_property_nb(std::exchange(rhs.anonymous_property_nb, 0))
++      anonymous_property_nb(std::exchange(rhs.anonymous_property_nb, 0)),
++      number_of_builtin_properties_(rhs.number_of_builtin_properties_)
+     {
+       std::cout << "Move constructor of Indexed_container\n";
+     }
+@@ -1078,7 +1090,10 @@ namespace CGAL {
+         if constexpr(internal::TDS_3::use_experimental_properties) {
+           properties_.reset(idx);
+         } else {
+-          properties_.reset(idx.id());
++          // The built-in property maps are initialized by their owners (see
++          // `set_builtin_properties()`), the generic reset is only needed for the others.
++          storage_[idx] = Storage_type();
++          properties_.reset(idx.id(), number_of_builtin_properties_);
+         }
+         EraseCounterStrategy<Element_type>::restore_erase_counter(&elt, ec);
+ #if CGAL_DEBUG_INDEXED_CONTAINER
+@@ -1416,32 +1431,36 @@ namespace CGAL {
+ 
+     Vertex_handle create_vertex()
+     {
+-      return Vertex_handle{this, vertex_container().create(this)};
++      return Vertex_handle{this, create_vertex_index()};
+     }
+ 
+     Vertex_index create_vertex_descriptor()
+     {
+-      return vertex_container().create(this);
++      return create_vertex_index();
+     }
+ 
+     Vertex_index create_vertex_index()
+     {
+-      return vertex_container().create(this);
++      Vertex_index vi = vertex_container().create(this);
++      vertex_point_pmap_[vi] = Point(); // built-in property map, see the constructor
++      return vi;
+     }
+ 
+-    Cell_handle create_cell()
++    Cell_index create_cell_index()
+     {
+-      return Cell_handle{this, cell_container().create(this)};
++      Cell_index ci = cell_container().create(this);
++      cell_data_[ci] = Cell_data(); // built-in property map, see the constructor
++      return ci;
+     }
+ 
+-    Cell_index create_cell(const Cell_index&)
++    Cell_handle create_cell()
+     {
+-      return cell_container().create(this);
++      return Cell_handle{this, create_cell_index()};
+     }
+ 
+-    Cell_index create_cell_index()
++    Cell_index create_cell(const Cell_index&)
+     {
+-      return cell_container().create(this);
++      return create_cell_index();
+     }
+ 
+     Vertex_handle create_vertex(const Vertex& v)
+@@ -1677,6 +1696,10 @@ namespace CGAL {
+     : vertex_container_(), cell_container_(), dimension_(-2)
+     {
+       vertex_point_pmap_ = vertex_container().template add_property_map<Point>("v:point").first;
++      // the points and the cell data are initialized by `create_vertex_index()` and
++      // `create_cell_index()`: the containers do not need to reset them
++      vertex_container().set_builtin_properties();
++      cell_container().set_builtin_properties();
+     }
+ 
+     // copy constructor
+diff --git a/TDS_3/include/CGAL/Triangulation_data_structure_3.h b/TDS_3/include/CGAL/Triangulation_data_structure_3.h
+index d16fbbe5e..2fed39372 100644
+--- a/TDS_3/include/CGAL/Triangulation_data_structure_3.h
++++ b/TDS_3/include/CGAL/Triangulation_data_structure_3.h
+@@ -1272,33 +1272,36 @@ public:
+   // around a vertex
+ private:
+ 
+-  template <class IncidentCellIterator, class IncidentFacetIterator>
+-  std::pair<IncidentCellIterator, IncidentFacetIterator>
+-  incident_cells_3(Vertex_handle v, Cell_handle d,
+-                                 std::pair<IncidentCellIterator,
+-                                 IncidentFacetIterator> it) const
++  // Depth-first search of the cells incident to `v`, starting at `d`. The cells
++  // are output as descriptors and are left marked: the caller must clear their
++  // `tds_data()`.
++  template <class IncidentCellDescriptorIterator, class IncidentFacetIterator>
++  std::pair<IncidentCellDescriptorIterator, IncidentFacetIterator>
++  incident_cell_descriptors_3(vertex_descriptor v, cell_descriptor d,
++                              std::pair<IncidentCellDescriptorIterator,
++                                        IncidentFacetIterator> it) const
+   {
+         CGAL_precondition(dimension() == 3);
+ 
+-        std::stack<Cell_handle, boost::container::small_vector<Cell_handle, 128>> cell_stack;
++        std::stack<cell_descriptor, boost::container::small_vector<cell_descriptor, 128>> cell_stack;
+         cell_stack.push(d);
+-        d->tds_data().mark_in_conflict();
++        tds_data(d).mark_in_conflict();
+         *it.first++ = d;
+ 
+         do {
+-                Cell_handle c = cell_stack.top();
++                cell_descriptor c = cell_stack.top();
+                 cell_stack.pop();
+ 
+                 for (int i=0; i<4; ++i) {
+-                        if (c->vertex(i) == v)
++                        if (vertex(c, i) == v)
+                                 continue;
+-                        Cell_handle next = c->neighbor(i);
++                        cell_descriptor next = neighbor(c, i);
+                         if (c < next)
+-                                *it.second++ = Facet(c, i); // Incident facet.
+-                        if (! next->tds_data().is_clear())
++                                *it.second++ = Facet(handle(c), i); // Incident facet.
++                        if (! tds_data(next).is_clear())
+                                 continue;
+                         cell_stack.push(next);
+-                        next->tds_data().mark_in_conflict();
++                        tds_data(next).mark_in_conflict();
+                         *it.first++ = next;
+                 }
+         } while(!cell_stack.empty());
+@@ -1306,6 +1309,19 @@ private:
+         return it;
+   }
+ 
++  template <class IncidentCellIterator, class IncidentFacetIterator>
++  std::pair<IncidentCellIterator, IncidentFacetIterator>
++  incident_cells_3(Vertex_handle v, Cell_handle d,
++                                 std::pair<IncidentCellIterator,
++                                 IncidentFacetIterator> it) const
++  {
++        auto cells = boost::make_function_output_iterator(
++            [&](const cell_descriptor& c) { *it.first++ = handle(c); });
++        it.second = incident_cell_descriptors_3(descriptor(v), descriptor(d),
++                                                std::make_pair(cells, it.second)).second;
++        return it;
++  }
++
+   template <class IncidentFacetIterator, typename CellsContainers>
+   void
+   incident_cells_3_threadsafe(Vertex_handle v, Cell_handle d,
+@@ -1802,16 +1818,23 @@ public:
+ 
+     Visitor visit(v, output, this, f);
+ 
+-    boost::container::small_vector<Cell_handle, 128> tmp_cells;
+-    if ( dimension() == 3 )
+-    incident_cells_3(v, v->cell(), std::make_pair(std::back_inserter(tmp_cells), visit.facet_it()));
+-    else
+-    incident_cells_2(v, v->cell(), std::back_inserter(tmp_cells));
+-
+-    for(auto c : tmp_cells)
+-    {
+-      c->tds_data().clear();
+-      visit(c);
++    if ( dimension() == 3 ) {
++      boost::container::small_vector<cell_descriptor, 128> tmp_cells;
++      incident_cell_descriptors_3(descriptor(v), descriptor(v->cell()),
++                                  std::make_pair(std::back_inserter(tmp_cells), visit.facet_it()));
++      for(auto c : tmp_cells)
++      {
++        tds_data(c).clear();
++        visit(handle(c));
++      }
++    } else {
++      boost::container::small_vector<Cell_handle, 128> tmp_cells;
++      incident_cells_2(v, v->cell(), std::back_inserter(tmp_cells));
++      for(auto c : tmp_cells)
++      {
++        c->tds_data().clear();
++        visit(c);
++      }
+     }
+ 
+     return visit.result();

@@ -1,0 +1,75 @@
+diff --git a/TDS_3/include/CGAL/TDS_3/Indexed_storage.h b/TDS_3/include/CGAL/TDS_3/Indexed_storage.h
+index fcf0c91fd..51708f437 100644
+--- a/TDS_3/include/CGAL/TDS_3/Indexed_storage.h
++++ b/TDS_3/include/CGAL/TDS_3/Indexed_storage.h
+@@ -1100,8 +1100,14 @@ namespace CGAL {
+         ss << idx << " (recycled from freelist)\n";
+ #endif
+       } else {
+-        if constexpr(is_parallel) {
+-          std::unique_lock<std::mutex> lock(mutex_);
++        if constexpr(internal::TDS_3::use_experimental_properties) {
++          idx = Index_type{static_cast<size_type>(properties_.emplace())};
++        } else {
++          // As `Compact_container`, grow by blocks of increasing size: one call of
++          // `grow_by()` for all property arrays, and the other new elements go to the
++          // free list. Creating one element at a time would call `push_back()` of
++          // each property array for each element.
++          std::conditional_t<is_parallel, std::unique_lock<std::mutex>, Null_tag> lock{mutex_};
+           auto increment = size_of_blocks;
+           auto pos = static_cast<size_type>(properties_.grow_by(increment));
+           for(auto i = pos + 1, end = pos + increment; i < end; ++i) {
+@@ -1111,16 +1117,10 @@ namespace CGAL {
+           free_list_next_function_(storage_[Index_type{pos + increment - 1}]) = Index_type::invalid_index;
+           local_number_of_removed_elements() += (increment - 1);
+           freelist_ = pos + 1;
++          garbage_ = true;
+           size_of_blocks += CGAL_INCREMENT_COMPACT_CONTAINER_BLOCK_SIZE;
+           idx = Index_type{pos};
+           removed_[idx] = false;
+-        } else {
+-          // sequential case
+-          if constexpr(internal::TDS_3::use_experimental_properties) {
+-            idx = Index_type{static_cast<size_type>(properties_.emplace())};
+-          } else {
+-            idx = Index_type{properties_.push_back()};
+-          }
+         }
+         elt = Element_type(container, idx);
+ #if CGAL_DEBUG_INDEXED_CONTAINER
+@@ -1137,12 +1137,6 @@ namespace CGAL {
+     void remove(Index_type idx, Container* container)
+     {
+       size_type& freelist_ = free_list();
+-      if constexpr(! internal::TDS_3::use_experimental_properties && ! is_parallel){
+-        if(idx.idx() == properties_.size()-1){
+-          properties_.pop_back();
+-          return;
+-        }
+-      }
+       removed_[idx] = true; ++local_number_of_removed_elements(); garbage_ = true;
+       free_list_next_function_(storage_[idx]) = freelist_;
+       freelist_ = idx.id();
+@@ -1529,16 +1523,20 @@ namespace CGAL {
+ 
+     Vertex_index create_vertex_index()
+     {
++      const size_type n = num_vertices();
+       Vertex_index vi = vertex_container().create(this);
+-      update_vertex_array_addresses();
++      if(num_vertices() != n) // the arrays grew, and may have been reallocated
++        update_vertex_array_addresses();
+       point_pmap()[vi] = Point(); // built-in property map, see the constructor
+       return vi;
+     }
+ 
+     Cell_index create_cell_index()
+     {
++      const size_type n = num_cells();
+       Cell_index ci = cell_container().create(this);
+-      update_cell_array_addresses();
++      if(num_cells() != n) // the arrays grew, and may have been reallocated
++        update_cell_array_addresses();
+       cell_tds_data_pmap()[ci] = Cell_data(); // built-in property map, see the constructor
+       return ci;
+     }

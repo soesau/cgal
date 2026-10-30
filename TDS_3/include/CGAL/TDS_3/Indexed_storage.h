@@ -984,17 +984,40 @@ namespace CGAL {
       return *this;
     }
 
-    Indexed_container(Indexed_container&& rhs)
+    static constexpr bool is_nothrow_movable = std::is_nothrow_move_constructible_v<free_list_type> &&
+                                               std::is_nothrow_move_assignable_v<free_list_type>;
+
+    // The property arrays are moved with `properties_`, so `storage_` and `removed_`
+    // remain valid.
+    Indexed_container(Indexed_container&& rhs) noexcept(is_nothrow_movable)
     : properties_(std::move(rhs.properties_)),
-      removed_(std::move(rhs.removed_)),
+      size_of_blocks(rhs.size_of_blocks),
       nb_of_removed_elements_(std::exchange(rhs.nb_of_removed_elements_, 0)),
-      freelist_(std::exchange(rhs.freelist_,(std::numeric_limits<size_type>::max)())),
+      freelist_(std::move(rhs.freelist_)),
+      anonymous_property_nb(std::exchange(rhs.anonymous_property_nb, 0)),
       garbage_(std::exchange(rhs.garbage_, false)),
       storage_(std::move(rhs.storage_)),
-      anonymous_property_nb(std::exchange(rhs.anonymous_property_nb, 0)),
+      removed_(std::move(rhs.removed_)),
       number_of_builtin_properties_(rhs.number_of_builtin_properties_)
     {
-      std::cout << "Move constructor of Indexed_container\n";
+      rhs.freelist_ = free_list_type{Index_type::invalid_index};
+    }
+
+    Indexed_container& operator=(Indexed_container&& rhs) noexcept(is_nothrow_movable)
+    {
+      if(this != &rhs) {
+        properties_ = std::move(rhs.properties_);
+        size_of_blocks = rhs.size_of_blocks;
+        nb_of_removed_elements_ = std::exchange(rhs.nb_of_removed_elements_, 0);
+        freelist_ = std::move(rhs.freelist_);
+        rhs.freelist_ = free_list_type{Index_type::invalid_index};
+        anonymous_property_nb = std::exchange(rhs.anonymous_property_nb, 0);
+        garbage_ = std::exchange(rhs.garbage_, false);
+        storage_ = std::move(rhs.storage_);
+        removed_ = std::move(rhs.removed_);
+        number_of_builtin_properties_ = rhs.number_of_builtin_properties_;
+      }
+      return *this;
     }
 
     template <typename Key, typename T>
@@ -1166,11 +1189,6 @@ namespace CGAL {
     using Concurrency_tag  = ConcurrencyTag;
     using Storage_tag = Index_tag;
 
-    // AF Do we have to do something like this?
-    // static constexpr bool  has_point = internal::Has_nested_type_Point<Vb>::value;
-    // using Point = typename internal::Get_nested_type_Point<Vb,int>::type;
-    using Point = typename Vb::Point;
-
 
     TDS& tds()
     {
@@ -1211,6 +1229,12 @@ namespace CGAL {
 
     using Cell_handle = Index_handle<Cell, Cell_index, Self>;
     using Vertex_handle = Index_handle<Vertex, Vertex_index, Self>;
+
+    // The points are stored only if the vertex type has a nested type `Point`, so that
+    // a purely combinatorial vertex base (e.g. `Vertex<>`) can be used. The rebound
+    // vertex type is tested, as `Vb` may be a generator (e.g. in Mesh_3).
+    static constexpr bool has_points = internal::Has_nested_type_Point<Vertex>::value;
+    using Point = typename internal::Get_nested_type_Point<Vertex, Null_tag>::type;
     using cell_descriptor = Cell_index;
     using vertex_descriptor = Vertex_index;
 
@@ -1351,14 +1375,16 @@ namespace CGAL {
     {
       if constexpr(!is_parallel) {
         array_addresses_.vertices = array_address<Vertex_index>(vertex_container().storage_, num_vertices());
-        array_addresses_.points = array_address<Vertex_index>(vertex_point_pmap_, num_vertices());
+        if constexpr(has_points)
+          array_addresses_.points = array_address<Vertex_index>(vertex_point_pmap_, num_vertices());
       }
     }
 
     // binds the built-in property maps (after a copy or a move of the containers)
     void bind_builtin_property_maps()
     {
-      vertex_point_pmap_ = this->template property_map<Vertex_index, Point>("v:point").value();
+      if constexpr(has_points)
+        vertex_point_pmap_ = this->template property_map<Vertex_index, Point>("v:point").value();
       cell_data_ = this->template property_map<Cell_index, Cell_data>("c:data").value();
       update_vertex_array_addresses();
       update_cell_array_addresses();
@@ -1394,6 +1420,7 @@ namespace CGAL {
       }
     }
 
+    template <bool b = has_points, std::enable_if_t<b, int> = 0>
     auto point_pmap() const
     {
       if constexpr(is_parallel) {
@@ -1527,7 +1554,8 @@ namespace CGAL {
       Vertex_index vi = vertex_container().create(this);
       if(num_vertices() != n) // the arrays grew, and may have been reallocated
         update_vertex_array_addresses();
-      point_pmap()[vi] = Point(); // built-in property map, see the constructor
+      if constexpr(has_points)
+        point_pmap()[vi] = Point(); // built-in property map, see the constructor
       return vi;
     }
 
@@ -1788,7 +1816,8 @@ namespace CGAL {
     Indexed_storage()
     : vertex_container_(), cell_container_(), dimension_(-2)
     {
-      vertex_point_pmap_ = vertex_container().template add_property_map<Point>("v:point").first;
+      if constexpr(has_points)
+        vertex_point_pmap_ = vertex_container().template add_property_map<Point>("v:point").first;
       // the points and the cell data are initialized by `create_vertex_index()` and
       // `create_cell_index()`: the containers do not need to reset them
       vertex_container().set_builtin_properties();
@@ -1807,12 +1836,19 @@ namespace CGAL {
       bind_builtin_property_maps();
     }
 
-    Indexed_storage(Indexed_storage&& other)
+    // A move keeps the property arrays (and the property maps referring to them).
+    Indexed_storage(Indexed_storage&& other) noexcept(Vertex_container::is_nothrow_movable &&
+                                                      Cell_container::is_nothrow_movable)
     : vertex_container_(std::move(other.vertex_container_)),
       cell_container_(std::move(other.cell_container_)),
+      cell_data_(std::move(other.cell_data_)),
+      vertex_point_pmap_(std::move(other.vertex_point_pmap_)),
       dimension_(std::exchange(other.dimension_, -2))
     {
-      bind_builtin_property_maps();
+      update_vertex_array_addresses();
+      update_cell_array_addresses();
+      other.update_vertex_array_addresses();
+      other.update_cell_array_addresses();
     }
 
     Indexed_storage& operator=(const Indexed_storage& other)
@@ -1826,13 +1862,19 @@ namespace CGAL {
       return *this;
     }
 
-    Indexed_storage& operator=(Indexed_storage&& other)
+    Indexed_storage& operator=(Indexed_storage&& other) noexcept(Vertex_container::is_nothrow_movable &&
+                                                                 Cell_container::is_nothrow_movable)
     {
       if(this != &other) {
         vertex_container_ = std::move(other.vertex_container_);
         cell_container_ = std::move(other.cell_container_);
+        cell_data_ = std::move(other.cell_data_);
+        vertex_point_pmap_ = std::move(other.vertex_point_pmap_);
         dimension_ = std::exchange(other.dimension_, -2);
-        bind_builtin_property_maps();
+        update_vertex_array_addresses();
+        update_cell_array_addresses();
+        other.update_vertex_array_addresses();
+        other.update_cell_array_addresses();
       }
       return *this;
     }
@@ -2046,25 +2088,32 @@ namespace CGAL {
     Property_map<Cell_index, Cell_data, Concurrency_tag> cell_data_ =
           cell_container().template add_property_map<Cell_data>("c:data").first;
 
-    Property_map<Vertex_index, Point, Concurrency_tag> vertex_point_pmap_;
+    CGAL_NO_UNIQUE_ADDRESS
+    std::conditional_t<has_points, Property_map<Vertex_index, Point, Concurrency_tag>, Null_tag> vertex_point_pmap_;
 
 
   public:
+    // only with a vertex base that has a point (member templates, so that an explicit
+    // instantiation of the TDS with a combinatorial vertex base does not instantiate them)
+    template <bool b = has_points, std::enable_if_t<b, int> = 0>
     const Point& point(const Vertex_handle& vh) const
     {
       return point_pmap()[vh.idx()];
     }
 
+    template <bool b = has_points, std::enable_if_t<b, int> = 0>
     const Point& point(const Vertex_index& vi) const
     {
       return point_pmap()[vi];
     }
 
+    template <bool b = has_points, std::enable_if_t<b, int> = 0>
     Point& point(const Vertex_handle& vh)
     {
       return point_pmap()[vh.idx()];
     }
 
+    template <bool b = has_points, std::enable_if_t<b, int> = 0>
     Point& point(const Vertex_index& vi)
     {
       return point_pmap()[vi];

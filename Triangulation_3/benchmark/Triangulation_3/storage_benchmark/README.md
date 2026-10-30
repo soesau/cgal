@@ -23,6 +23,7 @@ Compares the storage back-ends of `Triangulation_data_structure_3` for a
   and writes a Markdown report with timings, memory and correctness checks.
 - `prevent_deref_equality.patch`: fix of the quadratic cell iteration (see below).
 - `RESULTS_2026-10-12.md`: results of the first run and the analysis of the performance difference.
+- `RESULTS_2026-10-15.md`: cgal/main vs. the branch at the start and after the improvements.
 - `indexed_storage_experiments.patch`: the experiments of the performance
   investigation, each behind a macro (`CGAL_EXP_NO_RESET`, `CGAL_EXP_REMOVED_CHAR`,
   `CGAL_EXP_RAW_PTR`, `CGAL_EXP_NO_CHAR_ALIAS`, `CGAL_EXP_NO_POPBACK`); without the
@@ -54,13 +55,24 @@ python3 compare_storage_benchmark.py --patch prevent_deref_equality.patch \
     --variant "INDEX_EXP=-DCGAL_EXP_NO_RESET -DCGAL_EXP_REMOVED_CHAR -DCGAL_EXP_RAW_PTR"
 ```
 
-`--variant NAME=FLAGS` adds an `INDEX` build with extra compile flags, and
+`--variant NAME=FLAGS` adds a build with extra compile flags (with `Handle_tag` if `NAME`
+starts with `HANDLE`, with `Index_tag` otherwise), and
 `--variant NAME@TREE=FLAGS` builds it from another CGAL tree (e.g. a worktree with a
 prototype), so that both versions run interleaved in the same session:
 
 ```sh
 git worktree add ../prototype HEAD    # then change the code in ../prototype
 python3 compare_storage_benchmark.py --variant "INDEX_NEW@../prototype="
+```
+
+Compare several states of the branch with cgal/main (as in `RESULTS_2026-10-15.md`;
+`-DTDS_BENCH_REMOVE=0` skips the removal test for trees where `remove()` does not compile):
+
+```sh
+git worktree add --detach ../old bf2ef1f92f4
+python3 compare_storage_benchmark.py --configs MAIN --ratios-vs MAIN \
+    --variant "HANDLE_OLD@../old=" --variant "INDEX_OLD@../old=-DTDS_BENCH_REMOVE=0" \
+    --variant "HANDLE_NEW@../..=" --variant "INDEX_NEW@../..="
 ```
 
 ## What is measured

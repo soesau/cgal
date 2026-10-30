@@ -129,12 +129,15 @@ def main():
     ap.add_argument("--cxx-flags", default="", help="CMAKE_CXX_FLAGS for all configurations, e.g. -march=native")
     ap.add_argument("--cmake-arg", action="append", default=[], help="extra argument for cmake configure")
     ap.add_argument("--no-build", action="store_true", help="reuse existing builds")
+    ap.add_argument("--ratios-vs", metavar="NAME",
+                    help="report the ratios of all configurations relative to this one, e.g. MAIN")
     ap.add_argument("--patch", action="append", default=[],
                     help="apply this patch to a worktree of HEAD of --tree and benchmark HANDLE/INDEX "
                          "from there (repeatable; uncommitted changes of --tree are not included)")
     ap.add_argument("--variant", action="append", default=[], metavar="NAME[@TREE]=CXXFLAGS",
-                    help="additional INDEX configuration built with extra compile flags, optionally "
-                         "from another CGAL tree, e.g. a worktree with a prototype (repeatable)")
+                    help="additional configuration built with extra compile flags, optionally from "
+                         "another CGAL tree, e.g. a worktree with a prototype (repeatable); it "
+                         "uses Handle_tag if NAME starts with HANDLE, Index_tag otherwise")
     args = ap.parse_args()
 
     tree = args.tree.resolve()
@@ -166,7 +169,8 @@ def main():
             base = args.baseline_dir.resolve() if args.baseline_dir else ensure_baseline(tree, args.baseline_ref, build_dir)
             src, index = base, False
         elif c in ("HANDLE", "INDEX") or c in variants:
-            src, index = variant_trees.get(c, branch_src), c != "HANDLE"
+            # variants whose name starts with HANDLE use Handle_tag, the others Index_tag
+            src, index = variant_trees.get(c, branch_src), not c.startswith("HANDLE")
         else:
             sys.exit(f"unknown configuration {c}")
         bdir = build_dir / f"build-{c}"
@@ -216,7 +220,8 @@ def main():
         lines.append(f"patches applied to HEAD of the tree: {', '.join(pathlib.Path(p).name for p in args.patch)}\n")
     for v, f in variants.items():
         where = f" from `{variant_trees[v]}`" if v in variant_trees else ""
-        lines.append(f"variant {v}: INDEX{where} with `{f or '(no extra flags)'}`\n")
+        storage = "HANDLE" if v.startswith("HANDLE") else "INDEX"
+        lines.append(f"variant {v}: {storage}{where} with `{f or '(no extra flags)'}`\n")
     lines.append(f"tree `{tree}`, baseline `{args.baseline_dir or args.baseline_ref}`, "
                  f"rounds {args.rounds} x repeat {args.repeat}, CXX flags `{args.cxx_flags or '(default Release)'}`\n")
     for c in configs:
@@ -234,6 +239,9 @@ def main():
     ratios = [(a, b) for a, b in [("HANDLE", "MAIN"), ("INDEX", "HANDLE"), ("INDEX", "MAIN")]
               if a in configs and b in configs]
     ratios += [(v, "HANDLE") for v in variants if "HANDLE" in configs]
+    if args.ratios_vs:
+        base = args.ratios_vs.upper()
+        ratios = [(c, base) for c in configs if c != base]
     hdr += " | " + " | ".join(f"{a}/{b}" for a, b in ratios) + " |"
     lines.append("Minimum over all repetitions (median in parentheses). Ratio < 1 means faster.\n")
     lines.append(hdr)

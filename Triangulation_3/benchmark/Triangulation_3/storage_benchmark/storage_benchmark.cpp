@@ -335,6 +335,12 @@ static void run_dataset(const std::string& ds, const std::vector<Point_3>& pts) 
   }
 
   // 8. remove 10% of the vertices (random order) --------------------------------
+  // -DTDS_BENCH_REMOVE=0 skips this test, e.g. for trees where remove() does not
+  // compile with Index_tag (before 2e143d2871c)
+#ifndef TDS_BENCH_REMOVE
+#  define TDS_BENCH_REMOVE 1
+#endif
+#if TDS_BENCH_REMOVE
   {
     const std::size_t nr = (std::min<std::size_t>)(pts.size() / 10, 20000);
     // pick the vertices by their point, so that the choice is storage independent
@@ -358,6 +364,9 @@ static void run_dataset(const std::string& ds, const std::vector<Point_3>& pts) 
     DT ref(pts.begin() + nr, pts.end());
     check(ds, "remove.same_as_fresh", signature(ref) == sig ? 1 : 0);
   }
+#else
+  std::cout << "# remove test skipped (TDS_BENCH_REMOVE=0)" << std::endl;
+#endif
 }
 
 int main(int argc, char** argv) {
