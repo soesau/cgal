@@ -965,6 +965,10 @@ public:
     std::cerr << ss.str();
 #endif
     std::array <cell_descriptor, maximal_nb_of_facets_of_small_hole> new_cells;
+#ifdef CGAL_TDS3_SMALL_HOLE_DIRECTED_EDGES
+    // boundary vertices (u, v, w) of each new cell, see below
+    std::array<std::array<vertex_descriptor, 3>, maximal_nb_of_facets_of_small_hole> new_cell_triples;
+#endif
     for (unsigned char local_facet_index = 0, end = static_cast<unsigned char>(facets.size());
          local_facet_index < end; ++local_facet_index) {
       auto [c, i] = facets[local_facet_index];
@@ -978,6 +982,9 @@ public:
       set_vertex_cell(w, f.first);
       const auto nc = create_cell(v, u, w, nv);
       new_cells[local_facet_index] = nc;
+#ifdef CGAL_TDS3_SMALL_HOLE_DIRECTED_EDGES
+      new_cell_triples[local_facet_index] = {{u, v, w}};
+#endif
       set_vertex_cell(nv, nc);
       set_neighbor(nc, 3, f.first);
       set_neighbor(f.first, f.second, nc);
@@ -987,6 +994,24 @@ public:
       vertex_pair_facet_map.set({w, u}, {local_facet_index, '\0'});
     }
 
+#ifdef CGAL_TDS3_SMALL_HOLE_DIRECTED_EDGES
+    // Each new cell nc = (v, u, w, nv) sets its own three neighbors in the hole:
+    // the facet opposite to vertex 2 contains the directed edge (u,v) and is
+    // shared with the new cell holding the reversed edge (v,u); same for
+    // (v,w) opposite to 1 and (w,u) opposite to 0.
+    // Every directed edge is looked up exactly once, so get_and_erase() leaves
+    // the map empty. This replaces the iteration over the map below, whose
+    // 'first < second' test is true for exactly half of the entries in an
+    // unpredictable order and was a major source of branch mispredictions.
+    for (unsigned char local_facet_index = 0, end = static_cast<unsigned char>(facets.size());
+         local_facet_index < end; ++local_facet_index) {
+      const auto& t = new_cell_triples[local_facet_index];
+      const auto nc = new_cells[local_facet_index];
+      set_neighbor(nc, 2, new_cells[vertex_pair_facet_map.get_and_erase(Vertex_pair(t[1], t[0])).first]);
+      set_neighbor(nc, 1, new_cells[vertex_pair_facet_map.get_and_erase(Vertex_pair(t[2], t[1])).first]);
+      set_neighbor(nc, 0, new_cells[vertex_pair_facet_map.get_and_erase(Vertex_pair(t[0], t[2])).first]);
+    }
+#else
     for(auto it = vertex_pair_facet_map.begin(); it != vertex_pair_facet_map.end(); ++it){
       const auto& [vertex_pair, local_facet] = *it;
       if(vertex_pair.first < vertex_pair.second){
@@ -999,6 +1024,7 @@ public:
         set_adjacency(nc, indexc, other_c, other_index);
       }
     }
+#endif
     for(auto cd : cells){
       tds_data(cd).clear(); // was in conflict
     }

@@ -87,11 +87,22 @@ public:
 
   int index(Vertex_handle v) const
   {
+#ifdef CGAL_TDS3_BRANCHLESS_INDEX
+    // Branch-free: the matching slot is data dependent and mispredicts.
+    // Same result as the branchy version: first match, 3 if none of 0..2 match.
+    static constexpr signed char first_match[8] = {3, 0, 1, 0, 2, 0, 1, 0};
+    const unsigned m =  unsigned(v == V[0])
+                     | (unsigned(v == V[1]) << 1)
+                     | (unsigned(v == V[2]) << 2);
+    CGAL_assertion( m != 0 || v == V[3] );
+    return first_match[m];
+#else
     if (v == V[0]) { return 0; }
     if (v == V[1]) { return 1; }
     if (v == V[2]) { return 2; }
     CGAL_assertion( v == V[3] );
     return 3;
+#endif
   }
 
   Cell_handle neighbor(int i) const
@@ -116,11 +127,23 @@ public:
 
   int index(Cell_handle n) const
   {
+#ifdef CGAL_TDS3_BRANCHLESS_INDEX
+    // Branch-free: used by mirror_facet() in _insert_in_small_hole() where
+    // the matching slot is data dependent and mispredicts.
+    // Same result as the branchy version: first match, 3 if none of 0..2 match.
+    static constexpr signed char first_match[8] = {3, 0, 1, 0, 2, 0, 1, 0};
+    const unsigned m =  unsigned(n == N[0])
+                     | (unsigned(n == N[1]) << 1)
+                     | (unsigned(n == N[2]) << 2);
+    CGAL_assertion( m != 0 || n == N[3] );
+    return first_match[m];
+#else
     if (n == N[0]) return 0;
     if (n == N[1]) return 1;
     if (n == N[2]) return 2;
     CGAL_assertion( n == N[3] );
     return 3;
+#endif
   }
 
   // SETTING

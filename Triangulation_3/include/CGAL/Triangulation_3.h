@@ -17,6 +17,16 @@
 #include <CGAL/license/Triangulation_3.h>
 
 #include <CGAL/disable_warnings.h>
+
+#ifdef CGAL_T3_FIND_CONFLICTS_UNROLL
+#  if defined(__clang__)
+#    define CGAL_T3_UNROLL_4 _Pragma("unroll 4")
+#  elif defined(__GNUC__)
+#    define CGAL_T3_UNROLL_4 _Pragma("GCC unroll 4")
+#  else
+#    define CGAL_T3_UNROLL_4
+#  endif
+#endif
 #include <CGAL/basic.h>
 
 #ifdef CGAL_CONCURRENT_TRIANGULATION_3_PROFILING
@@ -1521,8 +1531,20 @@ protected:
       cell_stack.pop();
 
       // For each neighbor cell
+#ifdef CGAL_T3_FIND_CONFLICTS_UNROLL
+      // In 3D every cell has 4 neighbors. A constant trip count lets the
+      // compiler unroll the loop completely, which removes the loop-exit
+      // branch (mispredicted because of the data-dependent branches in the
+      // body). The 'i >= dim' test is always false in 3D and well predicted.
+      const int dim = dimension()+1;
+      CGAL_T3_UNROLL_4
+      for(int i=0; i < 4; ++i)
+      {
+        if(i >= dim) break;
+#else
       for(int i=0, dim = dimension()+1; i < dim; ++i)
       {
+#endif
         cell_descriptor test = tds().neighbor(cd, i);
 
         // "test" is either in the conflict zone,
@@ -1670,8 +1692,20 @@ protected:
       cell_stack.pop();
 
       // For each neighbor cell
+#ifdef CGAL_T3_FIND_CONFLICTS_UNROLL
+      // In 3D every cell has 4 neighbors. A constant trip count lets the
+      // compiler unroll the loop completely, which removes the loop-exit
+      // branch (mispredicted because of the data-dependent branches in the
+      // body). The 'i >= dim' test is always false in 3D and well predicted.
+      const int dim = dimension()+1;
+      CGAL_T3_UNROLL_4
+      for(int i=0; i < 4; ++i)
+      {
+        if(i >= dim) break;
+#else
       for(int i=0, dim = dimension()+1; i < dim; ++i)
       {
+#endif
         cell_descriptor test = tds().neighbor(cd, i);
 
         // "test" is either in the conflict zone,

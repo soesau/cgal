@@ -54,6 +54,21 @@ namespace internal { namespace TDS_3{
 
   static constexpr bool use_experimental_properties = false;
 
+#ifdef CGAL_TDS3_BRANCHLESS_INDEX
+  // Index of the first true flag among 4, or -1 if none, without branches.
+  // Used for index()/mirror_facet(), whose result is data dependent and
+  // otherwise causes branch mispredictions.
+  inline int first_match_4(bool b0, bool b1, bool b2, bool b3)
+  {
+    static constexpr signed char t[16] = {-1, 0, 1, 0, 2, 0, 1, 0,
+                                           3, 0, 1, 0, 2, 0, 1, 0};
+    return t[  unsigned(b0)
+            | (unsigned(b1) << 1)
+            | (unsigned(b2) << 2)
+            | (unsigned(b3) << 3)];
+  }
+#endif
+
   template <class Vertex_src,class Vertex_tgt>
   struct Default_index_vertex_converter;
 
@@ -153,22 +168,33 @@ namespace internal { namespace TDS_3{
 
     int index(const Vertex_handle& v) const
     {
+#ifdef CGAL_TDS3_BRANCHLESS_INDEX
+      const auto& w = storage().ivertices;
+      const auto vi = v.idx();
+      return ::CGAL::internal::TDS_3::first_match_4(vi == w[0], vi == w[1], vi == w[2], vi == w[3]);
+#else
       for (int i = 0; i < 4; ++i) {
         if (v.idx() == storage().ivertices[i]) {
           return i;
         }
       }
       return -1; // Not found
+#endif
     }
 
     int index(const Vertex_index& vi) const
     {
+#ifdef CGAL_TDS3_BRANCHLESS_INDEX
+      const auto& w = storage().ivertices;
+      return ::CGAL::internal::TDS_3::first_match_4(vi == w[0], vi == w[1], vi == w[2], vi == w[3]);
+#else
       for (int i = 0; i < 4; ++i) {
         if (vi == storage().ivertices[i]) {
           return i;
         }
       }
       return -1; // Not found
+#endif
     }
 
     bool has_vertex(const Vertex_handle& v) const
@@ -199,12 +225,18 @@ namespace internal { namespace TDS_3{
 
     int index(const Cell_handle& n) const
     {
+#ifdef CGAL_TDS3_BRANCHLESS_INDEX
+      const auto& nb = storage().ineighbors;
+      const auto ni = n.idx();
+      return ::CGAL::internal::TDS_3::first_match_4(ni == nb[0], ni == nb[1], ni == nb[2], ni == nb[3]);
+#else
       for (int i = 0; i < 4; ++i) {
         if (n.idx() == storage().ineighbors[i]) {
           return i;
         }
       }
       return -1; // Not found
+#endif
     }
 
     bool has_neighbor(const Cell_handle& n) const
@@ -1531,12 +1563,19 @@ namespace CGAL {
     {
       auto nd = cell_storage()[ci].ineighbors[i];
       auto& storage = cell_storage()[nd];
+#ifdef CGAL_TDS3_BRANCHLESS_INDEX
+      {
+        const auto& nb = storage.ineighbors;
+        return {nd, ::CGAL::internal::TDS_3::first_match_4(nb[0] == ci, nb[1] == ci, nb[2] == ci, nb[3] == ci)};
+      }
+#else
       for (int j = 0; j < 4; ++j) {
         if (storage.ineighbors[j] == ci) {
           return {nd, j};
         }
       }
       return {nd, -1};
+#endif
     }
 
     std::pair<Cell_handle, int>
